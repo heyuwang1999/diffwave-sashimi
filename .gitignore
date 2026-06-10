@@ -27,3 +27,7 @@ raw_audio/
 # Notebook / editor / OS cruft
 .ipynb_checkpoints/
 .DS_Store
+
+# Local scheduler state (session crons)
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
