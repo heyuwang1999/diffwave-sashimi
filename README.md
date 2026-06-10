@@ -23,7 +23,11 @@ vendor/                         # upstream engine (cloned, run commands from her
   configs/experiment/music.yaml
 scripts/prepare_data.py         # validate / re-encode / hold-out split (optional)
 scripts/smoke_test.py           # CPU soundness test (dataset + real model fwd/loss/sampling)
+scripts/evaluate.py             # A/B metrics: fidelity (FMD) + continuation faithfulness
+scripts/eval_smoke_test.py      # behavioral test for the metrics
+music_eval/                     # model-free eval metrics (mel-Frechet, seam, style)
 music_continuation/             # milestone-2 design + context-encoder scaffold
+ROADMAP_V2.md                   # prioritized plan to beat the official baseline
 notebooks/colab_quickstart.ipynb
 requirements-colab.txt
 ```
