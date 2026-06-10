@@ -212,14 +212,42 @@ def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None):
 
     _dh = diffusion_hyperparams
     T, Alpha_bar = _dh["T"], _dh["Alpha_bar"]
+    parameterization = _dh.get("parameterization", "eps")
+    min_snr_gamma = _dh.get("min_snr_gamma", None)
 
     # audio = X
     B, C, L = audio.shape  # B is batchsize, C=1, L is audio length
     diffusion_steps = torch.randint(T, size=(B,1,1)).cuda()  # randomly sample diffusion steps from 1~T
     z = torch.normal(0, 1, size=audio.shape).cuda()
-    transformed_X = torch.sqrt(Alpha_bar[diffusion_steps]) * audio + torch.sqrt(1-Alpha_bar[diffusion_steps]) * z  # compute x_t from q(x_t|x_0)
-    epsilon_theta = net((transformed_X, diffusion_steps.view(B,1),), mel_spec=mel_spec)  # predict \epsilon according to \epsilon_\theta
-    return loss_fn(epsilon_theta, z)
+    abar = Alpha_bar[diffusion_steps]                       # (B,1,1)
+    sqrt_abar, sqrt_1m_abar = torch.sqrt(abar), torch.sqrt(1 - abar)
+    transformed_X = sqrt_abar * audio + sqrt_1m_abar * z    # compute x_t from q(x_t|x_0)
+    prediction = net((transformed_X, diffusion_steps.view(B,1),), mel_spec=mel_spec)
+
+    # Fast path: original DiffWave (eps-prediction, unweighted) — unchanged numerics.
+    if parameterization == "eps" and min_snr_gamma is None:
+        return loss_fn(prediction, z)
+
+    if parameterization == "eps":
+        target = z
+    elif parameterization == "v":
+        # v-prediction (Salimans & Ho 2022): v = sqrt(abar)*eps - sqrt(1-abar)*x0
+        target = sqrt_abar * z - sqrt_1m_abar * audio
+    else:
+        raise ValueError(f"Unknown parameterization {parameterization!r} (use 'eps' or 'v')")
+
+    se = (prediction - target) ** 2                        # (B,1,L)
+    if min_snr_gamma is None:
+        return se.mean()
+
+    # Min-SNR-gamma loss weighting (Hang et al. 2023). SNR = abar / (1-abar).
+    snr = abar / (1 - abar)                                # (B,1,1)
+    clamped = torch.clamp(snr, max=min_snr_gamma)
+    if parameterization == "eps":
+        weight = clamped / snr
+    else:  # "v"
+        weight = clamped / (snr + 1)
+    return (weight * se).mean()
 
 
 

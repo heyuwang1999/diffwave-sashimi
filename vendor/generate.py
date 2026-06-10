@@ -37,6 +37,7 @@ def sampling(net, size, diffusion_hyperparams, condition=None):
 
     _dh = diffusion_hyperparams
     T, Alpha, Alpha_bar, Sigma = _dh["T"], _dh["Alpha"], _dh["Alpha_bar"], _dh["Sigma"]
+    parameterization = _dh.get("parameterization", "eps")
     assert len(Alpha) == T
     assert len(Alpha_bar) == T
     assert len(Sigma) == T
@@ -48,7 +49,12 @@ def sampling(net, size, diffusion_hyperparams, condition=None):
     with torch.no_grad():
         for t in tqdm(range(T-1, -1, -1)):
             diffusion_steps = (t * torch.ones((size[0], 1))).cuda()  # use the corresponding reverse step
-            epsilon_theta = net((x, diffusion_steps,), mel_spec=condition)  # predict \epsilon according to \epsilon_\theta
+            model_out = net((x, diffusion_steps,), mel_spec=condition)
+            if parameterization == "v":
+                # recover eps from v: eps = sqrt(1-abar)*x_t + sqrt(abar)*v
+                epsilon_theta = torch.sqrt(1-Alpha_bar[t]) * x + torch.sqrt(Alpha_bar[t]) * model_out
+            else:
+                epsilon_theta = model_out  # predict \epsilon according to \epsilon_\theta
             x = (x - (1-Alpha[t])/torch.sqrt(1-Alpha_bar[t]) * epsilon_theta) / torch.sqrt(Alpha[t])  # update x_{t-1} to \mu_\theta(x_t)
             if t > 0:
                 x = x + Sigma[t] * torch.normal(0, 1, size=size).cuda()  # add the variance term to x_{t-1}

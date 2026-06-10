@@ -119,6 +119,23 @@ samp = sampling(net, (1, 1, TINY_L), dh)
 check("sampling output shape", tuple(samp.shape) == (1, 1, TINY_L), str(tuple(samp.shape)))
 check("sampling output finite", bool(torch.isfinite(samp).all()))
 
+print("\n=== 6. Tier-0: v-prediction + Min-SNR weighting (config-gated) ===")
+for param in ("eps", "v"):
+    for gamma in (None, 5.0):
+        dh2 = calc_diffusion_hyperparams(T=50, beta_0=1e-4, beta_T=0.02, beta=None,
+                                         fast=False, parameterization=param, min_snr_gamma=gamma)
+        net.train(); net.zero_grad()
+        l = training_loss(net, nn.MSELoss(), x, dh2, mel_spec=None)
+        finite = l.dim() == 0 and bool(torch.isfinite(l))
+        l.backward()
+        gok = any(p.grad is not None and torch.isfinite(p.grad).all() for p in net.parameters())
+        check(f"train_loss finite+grads [{param}, min_snr={gamma}]", finite and gok, f"loss={l.item():.4f}")
+    net.eval()
+    dh_s = calc_diffusion_hyperparams(T=20, beta_0=1e-4, beta_T=0.02, beta=None,
+                                      fast=False, parameterization=param)
+    s = sampling(net, (1, 1, TINY_L), dh_s)
+    check(f"sampling finite [{param}]", tuple(s.shape) == (1, 1, TINY_L) and bool(torch.isfinite(s).all()))
+
 print("\n" + "=" * 50)
 n_pass = sum(results); n_tot = len(results)
 print(f"{n_pass}/{n_tot} checks passed")

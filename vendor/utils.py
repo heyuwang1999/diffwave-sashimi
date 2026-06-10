@@ -118,7 +118,8 @@ def local_directory(name, model_cfg, diffusion_cfg, dataset_cfg, output_director
 
 # Utilities for diffusion models
 
-def calc_diffusion_hyperparams(T, beta_0, beta_T, beta=None, fast=False):
+def calc_diffusion_hyperparams(T, beta_0, beta_T, beta=None, fast=False,
+                               parameterization="eps", min_snr_gamma=None):
     """
     Compute diffusion process hyperparameters
 
@@ -126,11 +127,18 @@ def calc_diffusion_hyperparams(T, beta_0, beta_T, beta=None, fast=False):
     T (int):                    number of diffusion steps
     beta_0 and beta_T (float):  beta schedule start/end value,
                                 where any beta_t in the middle is linearly interpolated
+    parameterization (str):     "eps" (original DiffWave) or "v" (v-prediction,
+                                Salimans & Ho 2022 — better fidelity/convergence).
+                                Read by training_loss() and sampling().
+    min_snr_gamma (float|None): if set (e.g. 5.0), apply Min-SNR-gamma loss
+                                weighting (Hang et al. 2023). None = unweighted
+                                (original behavior).
 
     Returns:
     a dictionary of diffusion hyperparameters including:
         T (int), Beta/Alpha/Alpha_bar/Sigma (torch.tensor on cpu, shape=(T, ))
         These cpu tensors are changed to cuda tensors on each individual gpu
+        plus the training/sampling knobs `parameterization` and `min_snr_gamma`.
     """
 
     if fast and beta is not None:
@@ -148,6 +156,8 @@ def calc_diffusion_hyperparams(T, beta_0, beta_T, beta=None, fast=False):
 
     _dh = {}
     _dh["T"], _dh["Beta"], _dh["Alpha"], _dh["Alpha_bar"], _dh["Sigma"] = T, Beta.cuda(), Alpha.cuda(), Alpha_bar.cuda(), Sigma
+    _dh["parameterization"] = parameterization
+    _dh["min_snr_gamma"] = min_snr_gamma
     return _dh
 
 

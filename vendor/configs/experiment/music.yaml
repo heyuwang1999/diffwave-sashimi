@@ -12,6 +12,10 @@ diffusion:
   beta_0: 0.0001
   beta_T: 0.02
   beta: null
+  # Tier-0 fidelity knobs (defaults below == original DiffWave; baseline unchanged).
+  # A/B by overriding on the CLI or using experiment=music_vpred.
+  parameterization: eps   # "eps" (original) or "v" (v-prediction)
+  min_snr_gamma: null      # e.g. 5.0 to enable Min-SNR-gamma loss weighting
 
 train:
   batch_size_per_gpu: 8      # A100 40GB headroom at d_model=64, L~44k; lower to 4 on L4/16GB

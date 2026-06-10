@@ -1,0 +1,32 @@
+# @package _global_
+# Tier-0 fidelity variant of `music`: v-prediction + Min-SNR-gamma weighting.
+# Same model/dataset/sizing as the baseline, so this is a clean A/B.
+#
+# Run:  python train.py experiment=music_vpred
+# Generate: python generate.py experiment=music_vpred generate.ckpt_iter=max
+#
+# `train.name: vpred` prefixes the run dir (exp/vpred_...) so it never clobbers
+# the baseline's checkpoints. Use distinct names for any other A/B variant.
+defaults:
+  - /model: sashimi_music
+  - /dataset: music
+
+diffusion:
+  T: 200
+  beta_0: 0.0001
+  beta_T: 0.02
+  beta: null
+  parameterization: v
+  min_snr_gamma: 5.0
+
+train:
+  name: vpred
+  batch_size_per_gpu: 8
+  n_iters: 500001
+  iters_per_ckpt: 5000
+  iters_per_logging: 100
+  learning_rate: 2e-4
+
+generate:
+  n_samples: 4
+  batch_size: null
