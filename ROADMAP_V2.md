@@ -30,8 +30,8 @@ Order by ROI (✅ = implemented, config-gated, smoke-tested):
    input channels → use a distinct `train.name`; not checkpoint-compatible with baseline).
 4. ✅ **Multi-resolution STFT auxiliary loss** on x₀ (Yamamoto 2020) —
    `diffusion.stft_loss_weight=0.1` (directly targets cleanliness).
-5. ⬜ **DPM-Solver++ / DDIM sampling** — deprioritized (speed, not your ranked axis);
-   easy drop-in later for faster iteration.
+5. ✅ **DDIM sampling** — deterministic, fewer steps: `generate.sampler=ddim
+   generate.sampling_steps=20`. (DPM-Solver++ is a further drop-in if needed.)
 Each is a config flag, defaults == original DiffWave, so the baseline is unchanged.
 
 **Tier 2 — continuation faithfulness (the goal).** (✅ = implemented, smoke-tested)

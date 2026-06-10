@@ -285,6 +285,16 @@ roll = rollout_continuation(cc_net, dh_r, torch.randn(1, 1, TINY_L),
 check("rollout length == n_chunks*chunk_len", tuple(roll.shape) == (1, 1, 3 * TINY_L), str(tuple(roll.shape)))
 check("rollout output finite", bool(torch.isfinite(roll).all()))
 
+print("\n=== 12. Tier-0: DDIM sampling (fewer steps) ===")
+net.eval()
+dh_full = calc_diffusion_hyperparams(T=100, beta_0=1e-4, beta_T=0.02, beta=None, fast=False)
+sd = sampling(net, (1, 1, TINY_L), dh_full, sampler="ddim", sampling_steps=10)
+check("DDIM sampling finite + shape", tuple(sd.shape) == (1, 1, TINY_L) and bool(torch.isfinite(sd).all()))
+dh_v100 = calc_diffusion_hyperparams(T=100, beta_0=1e-4, beta_T=0.02, beta=None, fast=False, parameterization="v")
+sdv = sampling(cc_net, (1, 1, TINY_L), dh_v100, context=torch.randn(1, 1, TINY_L),
+               guidance=2.0, sampler="ddim", sampling_steps=8)
+check("DDIM + v-param + CFG finite", tuple(sdv.shape) == (1, 1, TINY_L) and bool(torch.isfinite(sdv).all()))
+
 print("\n" + "=" * 50)
 n_pass = sum(results); n_tot = len(results)
 print(f"{n_pass}/{n_tot} checks passed")

@@ -20,7 +20,8 @@ from scipy.io.wavfile import write as wavwrite
 from models import construct_model
 from utils import find_max_epoch, print_size, calc_diffusion_hyperparams, local_directory, smooth_ckpt
 
-def sampling(net, size, diffusion_hyperparams, condition=None, context=None, guidance=1.0):
+def sampling(net, size, diffusion_hyperparams, condition=None, context=None, guidance=1.0,
+             sampler="ddpm", sampling_steps=None):
     """
     Perform the complete sampling step according to p(x_0|x_T) = \prod_{t=1}^T p_{\theta}(x_{t-1}|x_t)
 
@@ -51,13 +52,23 @@ def sampling(net, size, diffusion_hyperparams, condition=None, context=None, gui
     assert len(Sigma) == T
     assert len(size) == 3
 
-    print('begin sampling, total number of reverse steps = %s' % T)
+    # Reverse-step schedule: full T for DDPM; an evenly-spaced subsequence for DDIM.
+    if sampler == "ddim":
+        n = sampling_steps or T
+        seq = torch.linspace(T - 1, 0, n).round().long().tolist()
+        iterator = []
+        for t in seq:                      # dedup while preserving descending order
+            if not iterator or iterator[-1] != int(t):
+                iterator.append(int(t))
+    else:
+        iterator = list(range(T - 1, -1, -1))
+    print(f'begin {sampler} sampling, {len(iterator)} reverse steps (T={T})')
 
     x = torch.normal(0, 1, size=size).cuda()
     x_self = torch.zeros(size).cuda() if self_cond else None
     with torch.no_grad():
-        for t in tqdm(range(T-1, -1, -1)):
-            diffusion_steps = (t * torch.ones((size[0], 1))).cuda()  # use the corresponding reverse step
+        for i, t in enumerate(tqdm(iterator)):
+            diffusion_steps = (t * torch.ones((size[0], 1))).cuda()  # current reverse step
             sqrt_abar_t, sqrt_1m_abar_t = torch.sqrt(Alpha_bar[t]), torch.sqrt(1-Alpha_bar[t])
 
             def _to_eps(model_out):
@@ -71,12 +82,22 @@ def sampling(net, size, diffusion_hyperparams, condition=None, context=None, gui
                 # classifier-free guidance: push away from the unconditional score
                 eps_uncond = _to_eps(net((x, diffusion_steps,), mel_spec=condition, context=None, **sc_extra))
                 epsilon_theta = eps_uncond + guidance * (epsilon_theta - eps_uncond)
+            x0_hat = (x - sqrt_1m_abar_t * epsilon_theta) / sqrt_abar_t
             if self_cond:
-                # carry the current x0 estimate into the next (lower-noise) step
-                x_self = (x - sqrt_1m_abar_t * epsilon_theta) / sqrt_abar_t
-            x = (x - (1-Alpha[t])/sqrt_1m_abar_t * epsilon_theta) / torch.sqrt(Alpha[t])  # update x_{t-1} to \mu_\theta(x_t)
-            if t > 0:
-                x = x + Sigma[t] * torch.normal(0, 1, size=size).cuda()  # add the variance term to x_{t-1}
+                x_self = x0_hat  # carry the current x0 estimate into the next (lower-noise) step
+            if sampler == "ddim":
+                # deterministic DDIM (eta=0): jump to the next scheduled step
+                t_prev = iterator[i + 1] if i + 1 < len(iterator) else -1
+                if t_prev < 0:
+                    x = x0_hat
+                else:
+                    abar_prev = Alpha_bar[t_prev]
+                    x = torch.sqrt(abar_prev) * x0_hat + torch.sqrt(1 - abar_prev) * epsilon_theta
+            else:
+                # ancestral DDPM update (unchanged)
+                x = (x - (1-Alpha[t])/sqrt_1m_abar_t * epsilon_theta) / torch.sqrt(Alpha[t])
+                if t > 0:
+                    x = x + Sigma[t] * torch.normal(0, 1, size=size).cuda()
     return x
 
 
@@ -101,7 +122,7 @@ def load_context(context_path, ctx_len, sampling_rate):
 
 @torch.no_grad()
 def rollout_continuation(net, diffusion_hyperparams, context, n_chunks, chunk_len,
-                         context_len, guidance=1.0):
+                         context_len, guidance=1.0, sampler="ddpm", sampling_steps=None):
     """Sliding-window long continuation: generate one chunk conditioned on the
     current context, append it, slide the context window, and repeat. Produces
     arbitrarily long output by chaining the context-conditioned sampler.
@@ -111,7 +132,8 @@ def rollout_continuation(net, diffusion_hyperparams, context, n_chunks, chunk_le
     ctx = context
     chunks = []
     for c in range(n_chunks):
-        gen = sampling(net, (1, 1, chunk_len), diffusion_hyperparams, context=ctx, guidance=guidance)
+        gen = sampling(net, (1, 1, chunk_len), diffusion_hyperparams, context=ctx, guidance=guidance,
+                       sampler=sampler, sampling_steps=sampling_steps)
         chunks.append(gen)
         ctx = torch.cat([ctx, gen], dim=-1)[..., -context_len:]  # slide window over running audio
     return torch.cat(chunks, dim=-1)
@@ -130,6 +152,7 @@ def generate(
         ckpt_smooth=None,
         mel_path=None, mel_name=None,
         context_path=None, guidance=1.0, rollout_chunks=1,
+        sampler="ddpm", sampling_steps=None,
         dataloader=None,
     ):
     """
@@ -244,7 +267,8 @@ def generate(
         ctx_len = context_batch.shape[-1]
         for _ in range(n_samples):
             roll = rollout_continuation(net, diffusion_hyperparams, context_batch[:1],
-                                        rollout_chunks, audio_length, ctx_len, guidance)
+                                        rollout_chunks, audio_length, ctx_len, guidance,
+                                        sampler=sampler, sampling_steps=sampling_steps)
             generated_audio.append(roll)
         generated_audio = torch.cat(generated_audio, dim=0)
         print(f'rollout: {rollout_chunks} chunks x {audio_length} = '
@@ -258,6 +282,8 @@ def generate(
                 condition=ground_truth_mel_spectrogram,
                 context=context_batch,
                 guidance=guidance,
+                sampler=sampler,
+                sampling_steps=sampling_steps,
             )
             generated_audio.append(_audio)
         generated_audio = torch.cat(generated_audio, dim=0)
