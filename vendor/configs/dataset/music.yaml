@@ -1,0 +1,10 @@
+_name_: music
+# Point this at a directory of audio files (searched recursively) or a single file.
+# For "a few long tracks", just drop them in here; they are chunked on the fly.
+data_path: data/music
+# segment_length MUST be divisible by prod(model.pool). With pool=[4,4] that is 16.
+# 44032 = 16 * 2752 ~= 1.997 s at 22050 Hz.
+segment_length: 44032
+sampling_rate: 22050
+samples_per_epoch: null   # null -> auto (~total_audio / segment_length, min 1000)
+peak_normalize: true

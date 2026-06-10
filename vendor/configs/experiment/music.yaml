@@ -1,0 +1,25 @@
+# @package _global_
+# Milestone 1: unconditional raw-waveform music generation with SaShiMi+DiffWave.
+# Sized for a single A100/L4 (Colab Pro) on a few long source tracks.
+#
+# Run:  python train.py experiment=music
+defaults:
+  - /model: sashimi_music
+  - /dataset: music
+
+diffusion:
+  T: 200
+  beta_0: 0.0001
+  beta_T: 0.02
+  beta: null
+
+train:
+  batch_size_per_gpu: 8      # A100 40GB headroom at d_model=64, L~44k; lower to 4 on L4/16GB
+  n_iters: 500001
+  iters_per_ckpt: 5000
+  iters_per_logging: 100
+  learning_rate: 2e-4
+
+generate:
+  n_samples: 4               # samples auto-generated + logged at each checkpoint
+  batch_size: null

@@ -1,0 +1,17 @@
+_name_: sashimi
+unconditional: true
+in_channels: 1
+out_channels: 1
+diffusion_step_embed_dim_in: 128
+diffusion_step_embed_dim_mid: 512
+diffusion_step_embed_dim_out: 512
+unet: true
+# d_model=64 is a safe A100 starting point at ~44k-sample clips. Scale to 128
+# (the SC09 paper setting) once you confirm the pipeline trains and memory allows:
+#   python train.py experiment=music model.d_model=128
+d_model: 64
+n_layers: 6
+pool: [4, 4]   # total downsample = 16; dataset.segment_length must be divisible by this
+expand: 2
+ff: 2
+L: ${dataset.segment_length}  # truncate the (infinite) S4 kernel to the training length
