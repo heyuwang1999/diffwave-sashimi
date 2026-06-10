@@ -34,13 +34,20 @@ Order by ROI (✅ = implemented, config-gated, smoke-tested):
    easy drop-in later for faster iteration.
 Each is a config flag, defaults == original DiffWave, so the baseline is unchanged.
 
-**Tier 2 — continuation faithfulness (the goal).**
-1. **Cross-attention conditioning** from the noisy target to a context encoder
-   (upgrade of the current FiLM/broadcast scaffold in `music_continuation/`).
-2. **Classifier-free guidance on context** (train with random context dropout;
-   scale guidance at inference) — the biggest lever for context adherence.
-3. **Diffusion Forcing / AR-diffusion** (Chen 2024): per-frame noise levels with
+**Tier 2 — continuation faithfulness (the goal).** (✅ = implemented, smoke-tested)
+0. ✅ **Global context conditioning**: a ContextEncoder summarizes the preceding
+   audio; the vector is added to the diffusion-step embedding (FiLM-style, the
+   robust baseline). `experiment=music_continuation` (model.context_conditioning).
+1. ✅ **Classifier-free guidance**: train with context dropout
+   (`diffusion.context_cfg_dropout`), scale at inference (`sampling(..., guidance=w)`).
+2. ⬜ **Cross-attention conditioning** from the noisy target to a *sequence* of
+   context features (richer than the global vector) — next continuation upgrade.
+3. ⬜ **Diffusion Forcing / AR-diffusion** (Chen 2024): per-frame noise levels with
    clean past + noisy future → stable arbitrarily-long rollout continuation.
+
+Remaining glue: a continuation-aware generate.py CLI (load a context clip, sweep
+guidance). Auto-samples during continuation training are currently unconditional
+(harmless; generate() doesn't pass a context yet).
 
 **Tier 1 — backbone (only if Tier 0/2 plateau).** Swap S4→Mamba/S5 selective SSM;
 add windowed self-attention at the UNet bottleneck (modern SSM+attention hybrid).

@@ -20,6 +20,10 @@ def dataloader(dataset_cfg, batch_size, num_gpus, unconditional=True):
         assert unconditional, "music dataset currently supports unconditional generation (milestone 1)"
         from .music import MusicWaveform
         dataset = MusicWaveform(**dataset_cfg)
+    elif dataset_name == "music_continuation":
+        # Project addition (milestone 2): (target, context) pairs for continuation.
+        from .music import MusicContinuation
+        dataset = MusicContinuation(**dataset_cfg)
     dataset_cfg["_name_"] = dataset_name # Restore
 
     # distributed sampler

@@ -120,7 +120,14 @@ def train(
     while n_iter < n_iters + 1:
         epoch_loss = 0.
         for data in tqdm(trainloader, desc=f'Epoch {n_iter // len(trainloader)}'):
-            if model_cfg["unconditional"]:
+            context = None
+            if model_cfg.get("context_conditioning", False):
+                # continuation: dataset yields (target, context)
+                audio, context = data
+                audio = audio.cuda()
+                context = context.cuda()
+                mel_spectrogram = None
+            elif model_cfg["unconditional"]:
                 audio, _, _ = data
                 # load audio
                 audio = audio.cuda()
@@ -132,7 +139,7 @@ def train(
 
             # back-propagation
             optimizer.zero_grad()
-            loss = training_loss(net, nn.MSELoss(), audio, diffusion_hyperparams, mel_spec=mel_spectrogram)
+            loss = training_loss(net, nn.MSELoss(), audio, diffusion_hyperparams, mel_spec=mel_spectrogram, context=context)
             if num_gpus > 1:
                 reduced_loss = reduce_tensor(loss.data, num_gpus).item()
             else:
@@ -222,7 +229,7 @@ def multi_resolution_stft_loss(x, y, fft_sizes=(512, 1024, 2048),
     return total / len(fft_sizes)
 
 
-def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None):
+def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None, context=None):
     """
     Compute the diffusion training loss.
 
@@ -231,12 +238,14 @@ def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None):
       - min_snr_gamma: Min-SNR-gamma loss weighting (Hang et al. 2023)
       - stft_loss_weight: multi-resolution STFT auxiliary loss on x0
       - self-conditioning (read from the model): two-pass with a detached x0 estimate
+      - context conditioning (milestone 2) with classifier-free-guidance dropout
 
     Parameters:
     net (torch network):            the model
     loss_fn (torch loss function):  default nn.MSELoss()
-    audio (torch.tensor):           training data, shape=(batchsize, 1, length)
+    audio (torch.tensor):           training data (the target), shape=(B, 1, length)
     diffusion_hyperparams (dict):   from calc_diffusion_hyperparams (cuda tensors)
+    context (torch.tensor|None):    preceding audio for continuation, (B, 1, L_ctx)
     """
 
     _dh = diffusion_hyperparams
@@ -244,8 +253,11 @@ def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None):
     parameterization = _dh.get("parameterization", "eps")
     min_snr_gamma = _dh.get("min_snr_gamma", None)
     stft_w = _dh.get("stft_loss_weight", 0.0)
+    cfg_dropout = _dh.get("context_cfg_dropout", 0.0)
     self_cond = getattr(net, "self_conditioning", False) or \
         getattr(getattr(net, "module", None), "self_conditioning", False)
+    ctx_cond = getattr(net, "context_conditioning", False) or \
+        getattr(getattr(net, "module", None), "context_conditioning", False)
 
     B, C, L = audio.shape
     diffusion_steps = torch.randint(T, size=(B,1,1)).cuda()  # sample steps 1~T
@@ -255,6 +267,13 @@ def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None):
     x_t = sqrt_abar * audio + sqrt_1m_abar * z              # x_t from q(x_t|x_0)
     steps = diffusion_steps.view(B, 1)
 
+    # Classifier-free guidance: drop the context (this whole step) with prob
+    # cfg_dropout so the model also learns the unconditional score.
+    ctx_in = context
+    if ctx_cond and context is not None and cfg_dropout > 0 and torch.rand(1).item() < cfg_dropout:
+        ctx_in = None
+    base_extra = {"context": ctx_in} if ctx_cond else {}
+
     # Self-conditioning: with prob 0.5, feed a detached x0 estimate from a no-grad
     # pass; otherwise feed zeros (matching the first inference step).
     x_self = None
@@ -262,11 +281,13 @@ def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None):
         x_self = torch.zeros_like(audio)
         if torch.rand(1).item() < 0.5:
             with torch.no_grad():
-                pred0 = net((x_t, steps), mel_spec=mel_spec, x_self_cond=x_self)
+                pred0 = net((x_t, steps), mel_spec=mel_spec, x_self_cond=x_self, **base_extra)
                 x_self = _pred_to_x0(pred0, x_t, sqrt_abar, sqrt_1m_abar, parameterization).detach()
 
-    # Only pass x_self_cond when self-conditioning (WaveNet.forward has no such arg).
-    extra = {"x_self_cond": x_self} if self_cond else {}
+    # Only pass x_self_cond / context when applicable (WaveNet.forward has neither arg).
+    extra = dict(base_extra)
+    if self_cond:
+        extra["x_self_cond"] = x_self
     prediction = net((x_t, steps), mel_spec=mel_spec, **extra)
 
     # Fast path: original DiffWave (eps, unweighted, no STFT) — unchanged numerics.

@@ -1,0 +1,35 @@
+# @package _global_
+# Milestone 2: short-clip continuation. The model conditions on the preceding
+# audio (context encoder -> added to the diffusion-step embedding), trained with
+# classifier-free-guidance dropout so guidance can be scaled at inference.
+#
+# Train:    python train.py experiment=music_continuation
+# Generate: needs a context clip; pass guidance via generate.guidance (see sampling()).
+#
+# train.name=cont keeps its checkpoints separate from the unconditional baseline.
+defaults:
+  - /model: sashimi_music_cont
+  - /dataset: music_continuation
+
+diffusion:
+  T: 200
+  beta_0: 0.0001
+  beta_T: 0.02
+  beta: null
+  parameterization: v          # Tier-0 fidelity defaults on for the continuation model
+  min_snr_gamma: 5.0
+  schedule: linear
+  stft_loss_weight: 0.0
+  context_cfg_dropout: 0.1      # drop context 10% of steps -> learns unconditional score
+
+train:
+  name: cont
+  batch_size_per_gpu: 4         # context+target doubles activation memory vs baseline
+  n_iters: 500001
+  iters_per_ckpt: 5000
+  iters_per_logging: 100
+  learning_rate: 2e-4
+
+generate:
+  n_samples: 4
+  batch_size: null

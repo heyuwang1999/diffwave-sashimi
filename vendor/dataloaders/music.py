@@ -176,3 +176,77 @@ class MusicWaveform(Dataset):
 
         waveform = wav.unsqueeze(0)  # (1, segment_length) -> matches C=1 convention
         return waveform, self.sampling_rate, self.labels[file_idx]
+
+
+class MusicContinuation(Dataset):
+    """Continuation pairs: (target, context) where `target` is the segment that
+    immediately follows `context` within the same track. For milestone-2
+    short-clip continuation. Returns (target[1,L], context[1,L_ctx]) so the train
+    loop can unpack `audio, context = data`.
+
+    Files shorter than context_length+segment_length are tiled up to fit.
+    """
+
+    def __init__(self, data_path, segment_length=44032, context_length=None,
+                 sampling_rate=22050, samples_per_epoch=None, peak_normalize=True, **kwargs):
+        super().__init__()
+        self.segment_length = int(segment_length)
+        self.context_length = int(context_length) if context_length else int(segment_length)
+        self.sampling_rate = int(sampling_rate)
+        self.peak_normalize = peak_normalize
+        self.span = self.context_length + self.segment_length
+
+        files = _list_audio_files(data_path)
+        if not files:
+            raise FileNotFoundError(f"No audio files found under '{data_path}'.")
+
+        self.clips, self.labels = [], []
+        total = 0
+        resamplers = {}
+        for fp in files:
+            wav, sr = load_audio(fp)
+            wav = wav.mean(dim=0, keepdim=True)
+            if sr != self.sampling_rate:
+                if sr not in resamplers:
+                    resamplers[sr] = torchaudio.transforms.Resample(sr, self.sampling_rate)
+                wav = resamplers[sr](wav)
+            wav = wav.squeeze(0).contiguous()
+            if wav.numel() == 0:
+                continue
+            # tile up tracks too short to hold one (context+target) span
+            if wav.numel() < self.span:
+                reps = (self.span + wav.numel() - 1) // wav.numel() + 1
+                wav = wav.repeat(reps)
+            self.clips.append(wav)
+            self.labels.append(Path(fp).stem)
+            total += wav.numel()
+        if not self.clips:
+            raise RuntimeError(f"All audio files under '{data_path}' were empty.")
+
+        lengths = torch.tensor([c.numel() for c in self.clips], dtype=torch.float)
+        self.file_weights = lengths / lengths.sum()
+        if samples_per_epoch is None:
+            samples_per_epoch = max(1000, int(total // self.segment_length))
+        self.samples_per_epoch = int(samples_per_epoch)
+        print(f"[MusicContinuation] {len(self.clips)} file(s), {total/self.sampling_rate/60:.1f} min, "
+              f"context={self.context_length} target={self.segment_length} "
+              f"({self.span/self.sampling_rate:.2f}s span), samples_per_epoch={self.samples_per_epoch}")
+
+    def __len__(self):
+        return self.samples_per_epoch
+
+    def __getitem__(self, index):
+        file_idx = int(torch.multinomial(self.file_weights, 1).item())
+        wav = self.clips[file_idx]
+        n = wav.numel()
+        # start of the target; context is the span immediately before it
+        lo, hi = self.context_length, n - self.segment_length
+        start = self.context_length if hi <= lo else int(torch.randint(lo, hi + 1, (1,)).item())
+        context = wav[start - self.context_length:start]
+        target = wav[start:start + self.segment_length]
+        if self.peak_normalize:
+            # joint peak over the pair keeps relative levels consistent
+            peak = torch.cat([context, target]).abs().max()
+            if peak > 1e-8:
+                context, target = context / peak, target / peak
+        return target.unsqueeze(0), context.unsqueeze(0)

@@ -7,6 +7,7 @@ from einops import rearrange
 
 from models.utils import calc_diffusion_step_embedding
 from models.s4 import S4
+from models.context_encoder import ContextEncoder
 
 class TransposedLN(nn.Module):
     def __init__(self, d):
@@ -200,6 +201,9 @@ class Sashimi(nn.Module):
             mel_upsample=[16,16],
             L=16000,
             self_conditioning=False,
+            context_conditioning=False,
+            context_d_model=64,
+            context_n_blocks=6,
             **kwargs,
         ):
         super().__init__()
@@ -226,6 +230,17 @@ class Sashimi(nn.Module):
         # the shared two fc layers for diffusion step embedding
         self.fc_t1 = nn.Linear(diffusion_step_embed_dim_in, diffusion_step_embed_dim_mid)
         self.fc_t2 = nn.Linear(diffusion_step_embed_dim_mid, diffusion_step_embed_dim_out)
+
+        # Continuation conditioning (milestone 2): encode the preceding context and
+        # add it to the diffusion-step embedding (global / FiLM-style). The encoder
+        # output matches diffusion_step_embed_dim_out so it slots into the same path.
+        self.context_conditioning = context_conditioning
+        if context_conditioning:
+            self.context_encoder = ContextEncoder(
+                d_cond=diffusion_step_embed_dim_out,
+                d_model=context_d_model,
+                n_blocks=context_n_blocks,
+            )
 
         def _residual(d, L):
             return DiffWaveBlock(
@@ -280,7 +295,7 @@ class Sashimi(nn.Module):
                                         nn.ReLU(),
                                         ZeroConv1d(d_model, out_channels))
 
-    def forward(self, input_data, mel_spec=None, x_self_cond=None):
+    def forward(self, input_data, mel_spec=None, x_self_cond=None, context=None):
         audio, diffusion_steps = input_data
 
         x = audio
@@ -298,6 +313,11 @@ class Sashimi(nn.Module):
         diffusion_step_embed = calc_diffusion_step_embedding(diffusion_steps, self.diffusion_step_embed_dim_in)
         diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
         diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
+
+        # Add context conditioning. context=None is the classifier-free "null"
+        # condition (unconditional pass), so we simply add nothing.
+        if self.context_conditioning and context is not None:
+            diffusion_step_embed = diffusion_step_embed + self.context_encoder(context)
 
         # pass all UNet layers
         # Down blocks

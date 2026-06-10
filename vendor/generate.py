@@ -20,7 +20,7 @@ from scipy.io.wavfile import write as wavwrite
 from models import construct_model
 from utils import find_max_epoch, print_size, calc_diffusion_hyperparams, local_directory, smooth_ckpt
 
-def sampling(net, size, diffusion_hyperparams, condition=None):
+def sampling(net, size, diffusion_hyperparams, condition=None, context=None, guidance=1.0):
     """
     Perform the complete sampling step according to p(x_0|x_T) = \prod_{t=1}^T p_{\theta}(x_{t-1}|x_t)
 
@@ -30,6 +30,9 @@ def sampling(net, size, diffusion_hyperparams, condition=None):
                                     usually is (number of audios to generate, channels=1, length of audio)
     diffusion_hyperparams (dict):   dictionary of diffusion hyperparameters returned by calc_diffusion_hyperparams
                                     note, the tensors need to be cuda tensors
+    context (torch.tensor|None):    continuation context, (B, 1, L_ctx)
+    guidance (float):               classifier-free guidance scale (1.0 = no guidance).
+                                    Requires a context-conditioned model and a context.
 
     Returns:
     the generated audio(s) in torch.tensor, shape=size
@@ -40,6 +43,9 @@ def sampling(net, size, diffusion_hyperparams, condition=None):
     parameterization = _dh.get("parameterization", "eps")
     self_cond = getattr(net, "self_conditioning", False) or \
         getattr(getattr(net, "module", None), "self_conditioning", False)
+    ctx_cond = getattr(net, "context_conditioning", False) or \
+        getattr(getattr(net, "module", None), "context_conditioning", False)
+    do_guidance = ctx_cond and context is not None and guidance != 1.0
     assert len(Alpha) == T
     assert len(Alpha_bar) == T
     assert len(Sigma) == T
@@ -52,14 +58,19 @@ def sampling(net, size, diffusion_hyperparams, condition=None):
     with torch.no_grad():
         for t in tqdm(range(T-1, -1, -1)):
             diffusion_steps = (t * torch.ones((size[0], 1))).cuda()  # use the corresponding reverse step
-            extra = {"x_self_cond": x_self} if self_cond else {}  # WaveNet.forward has no such arg
-            model_out = net((x, diffusion_steps,), mel_spec=condition, **extra)
             sqrt_abar_t, sqrt_1m_abar_t = torch.sqrt(Alpha_bar[t]), torch.sqrt(1-Alpha_bar[t])
-            if parameterization == "v":
-                # recover eps from v: eps = sqrt(1-abar)*x_t + sqrt(abar)*v
-                epsilon_theta = sqrt_1m_abar_t * x + sqrt_abar_t * model_out
-            else:
-                epsilon_theta = model_out  # predict \epsilon according to \epsilon_\theta
+
+            def _to_eps(model_out):
+                # recover eps from v (eps = sqrt(1-abar)*x_t + sqrt(abar)*v) or pass-through
+                return sqrt_1m_abar_t * x + sqrt_abar_t * model_out if parameterization == "v" else model_out
+
+            sc_extra = {"x_self_cond": x_self} if self_cond else {}  # WaveNet.forward lacks these args
+            ctx_extra = {"context": context} if ctx_cond else {}
+            epsilon_theta = _to_eps(net((x, diffusion_steps,), mel_spec=condition, **ctx_extra, **sc_extra))
+            if do_guidance:
+                # classifier-free guidance: push away from the unconditional score
+                eps_uncond = _to_eps(net((x, diffusion_steps,), mel_spec=condition, context=None, **sc_extra))
+                epsilon_theta = eps_uncond + guidance * (epsilon_theta - eps_uncond)
             if self_cond:
                 # carry the current x0 estimate into the next (lower-noise) step
                 x_self = (x - sqrt_1m_abar_t * epsilon_theta) / sqrt_abar_t

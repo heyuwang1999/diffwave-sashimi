@@ -1,0 +1,8 @@
+_name_: music_continuation
+# Same long-file source as `music`; yields (target, context) adjacent crops.
+data_path: data/music
+segment_length: 44032        # target length (must be divisible by prod(model.pool)=16)
+context_length: 44032        # preceding context fed to the context encoder
+sampling_rate: 22050
+samples_per_epoch: null
+peak_normalize: true

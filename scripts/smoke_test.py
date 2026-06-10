@@ -179,6 +179,57 @@ sc_net.eval()
 ssc = sampling(sc_net, (1, 1, TINY_L), calc_diffusion_hyperparams(T=15, beta_0=1e-4, beta_T=0.02, beta=None, fast=False))
 check("self-cond sampling: finite + shape", tuple(ssc.shape) == (1, 1, TINY_L) and bool(torch.isfinite(ssc).all()))
 
+print("\n=== 8. Tier-2: continuation (context conditioning + CFG) ===")
+from dataloaders.music import MusicContinuation
+cds = MusicContinuation(data_dir, segment_length=TINY_L, context_length=TINY_L,
+                        sampling_rate=SR, samples_per_epoch=8)
+tgt, ctx0 = cds[0]
+check("continuation item: (target[1,L], context[1,L])",
+      tuple(tgt.shape) == (1, TINY_L) and tuple(ctx0.shape) == (1, TINY_L))
+
+cc_cfg = OmegaConf.create(dict(model_cfg))
+cc_cfg["_name_"] = "sashimi"; cc_cfg["context_conditioning"] = True
+cc_cfg["context_d_model"] = 16; cc_cfg["context_n_blocks"] = 2
+cc_net = construct_model(cc_cfg)
+check("context-cond model flag set", getattr(cc_net, "context_conditioning", False))
+# The model's final layer is ZeroConv1d (zero-init), so an untrained net outputs
+# zeros and passes no upstream gradient. Nudge it off zero so the influence/grad
+# checks below test the wiring rather than the init.
+with torch.no_grad():
+    for p in cc_net.final_conv.parameters():
+        p.add_(0.1 * torch.randn_like(p))
+ctxb = torch.randn(2, 1, TINY_L)
+o_ctx = cc_net((x, steps), context=ctxb)
+o_none = cc_net((x, steps), context=None)   # classifier-free null pass
+check("context forward shapes (with/without context)",
+      tuple(o_ctx.shape) == (2, 1, TINY_L) and tuple(o_none.shape) == (2, 1, TINY_L))
+check("context actually changes the output", not torch.allclose(o_ctx, o_none))
+
+# training_loss with context; dropout=0 so the encoder must receive gradient
+dh_c = calc_diffusion_hyperparams(T=50, beta_0=1e-4, beta_T=0.02, beta=None, fast=False,
+                                  parameterization="v", context_cfg_dropout=0.0)
+cc_net.train(); cc_net.zero_grad()
+lc = training_loss(cc_net, nn.MSELoss(), x, dh_c, context=ctxb)
+lc.backward()
+gok = any(p.grad is not None and torch.isfinite(p.grad).all() for p in cc_net.parameters())
+enc_grad = any(p.grad is not None and float(p.grad.abs().sum()) > 0 for p in cc_net.context_encoder.parameters())
+check("continuation training_loss: finite + grads", bool(torch.isfinite(lc)) and gok, f"loss={lc.item():.4f}")
+check("context encoder receives gradient (dropout=0)", enc_grad)
+
+# CFG dropout=1.0: context always dropped -> still finite (unconditional path)
+dh_d = calc_diffusion_hyperparams(T=50, beta_0=1e-4, beta_T=0.02, beta=None, fast=False,
+                                  parameterization="v", context_cfg_dropout=1.0)
+cc_net.zero_grad()
+ld = training_loss(cc_net, nn.MSELoss(), x, dh_d, context=ctxb)
+check("continuation training_loss finite with full CFG dropout", bool(torch.isfinite(ld)))
+
+# classifier-free guided sampling
+cc_net.eval()
+dh_s = calc_diffusion_hyperparams(T=15, beta_0=1e-4, beta_T=0.02, beta=None, fast=False, parameterization="v")
+sg = sampling(cc_net, (2, 1, TINY_L), dh_s, context=torch.randn(2, 1, TINY_L), guidance=3.0)
+check("guided continuation sampling: finite + shape",
+      tuple(sg.shape) == (2, 1, TINY_L) and bool(torch.isfinite(sg).all()))
+
 print("\n" + "=" * 50)
 n_pass = sum(results); n_tot = len(results)
 print(f"{n_pass}/{n_tot} checks passed")
