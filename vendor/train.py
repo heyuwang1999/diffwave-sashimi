@@ -8,6 +8,7 @@ import multiprocessing as mp
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 # from torch.utils.tensorboard import SummaryWriter
 import hydra
 import wandb
@@ -195,59 +196,104 @@ def train(
         # tb.close()
         wandb.finish()
 
+def _pred_to_x0(prediction, x_t, sqrt_abar, sqrt_1m_abar, parameterization):
+    """Recover the clean-signal estimate x0 from the model output."""
+    if parameterization == "eps":
+        return (x_t - sqrt_1m_abar * prediction) / sqrt_abar
+    return sqrt_abar * x_t - sqrt_1m_abar * prediction  # "v"
+
+
+def multi_resolution_stft_loss(x, y, fft_sizes=(512, 1024, 2048),
+                               hop_sizes=(128, 256, 512), win_sizes=(512, 1024, 2048)):
+    """Multi-resolution STFT loss (Yamamoto et al. 2020): spectral-convergence +
+    log-magnitude L1, summed over FFT resolutions. Encourages sharp, clean
+    high-frequency detail. x, y: (B, 1, L) or (B, L)."""
+    if x.dim() == 3:
+        x, y = x.squeeze(1), y.squeeze(1)
+    total = 0.0
+    for n_fft, hop, win in zip(fft_sizes, hop_sizes, win_sizes):
+        window = torch.hann_window(win, device=x.device)
+        kw = dict(n_fft=n_fft, hop_length=hop, win_length=win, window=window,
+                  return_complex=True, center=True, pad_mode="constant")  # constant pad: robust to short clips
+        sx, sy = torch.stft(x, **kw).abs(), torch.stft(y, **kw).abs()
+        sc = torch.linalg.norm(sy - sx) / (torch.linalg.norm(sy) + 1e-7)
+        mag = F.l1_loss(torch.log(sx + 1e-7), torch.log(sy + 1e-7))
+        total = total + sc + mag
+    return total / len(fft_sizes)
+
+
 def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None):
     """
-    Compute the training loss of epsilon and epsilon_theta
+    Compute the diffusion training loss.
+
+    Supports (all config-gated, defaults == original DiffWave):
+      - parameterization: "eps" or "v" (Salimans & Ho 2022)
+      - min_snr_gamma: Min-SNR-gamma loss weighting (Hang et al. 2023)
+      - stft_loss_weight: multi-resolution STFT auxiliary loss on x0
+      - self-conditioning (read from the model): two-pass with a detached x0 estimate
 
     Parameters:
-    net (torch network):            the wavenet model
-    loss_fn (torch loss function):  the loss function, default is nn.MSELoss()
-    X (torch.tensor):               training data, shape=(batchsize, 1, length of audio)
-    diffusion_hyperparams (dict):   dictionary of diffusion hyperparameters returned by calc_diffusion_hyperparams
-                                    note, the tensors need to be cuda tensors
-
-    Returns:
-    training loss
+    net (torch network):            the model
+    loss_fn (torch loss function):  default nn.MSELoss()
+    audio (torch.tensor):           training data, shape=(batchsize, 1, length)
+    diffusion_hyperparams (dict):   from calc_diffusion_hyperparams (cuda tensors)
     """
 
     _dh = diffusion_hyperparams
     T, Alpha_bar = _dh["T"], _dh["Alpha_bar"]
     parameterization = _dh.get("parameterization", "eps")
     min_snr_gamma = _dh.get("min_snr_gamma", None)
+    stft_w = _dh.get("stft_loss_weight", 0.0)
+    self_cond = getattr(net, "self_conditioning", False) or \
+        getattr(getattr(net, "module", None), "self_conditioning", False)
 
-    # audio = X
-    B, C, L = audio.shape  # B is batchsize, C=1, L is audio length
-    diffusion_steps = torch.randint(T, size=(B,1,1)).cuda()  # randomly sample diffusion steps from 1~T
+    B, C, L = audio.shape
+    diffusion_steps = torch.randint(T, size=(B,1,1)).cuda()  # sample steps 1~T
     z = torch.normal(0, 1, size=audio.shape).cuda()
     abar = Alpha_bar[diffusion_steps]                       # (B,1,1)
     sqrt_abar, sqrt_1m_abar = torch.sqrt(abar), torch.sqrt(1 - abar)
-    transformed_X = sqrt_abar * audio + sqrt_1m_abar * z    # compute x_t from q(x_t|x_0)
-    prediction = net((transformed_X, diffusion_steps.view(B,1),), mel_spec=mel_spec)
+    x_t = sqrt_abar * audio + sqrt_1m_abar * z              # x_t from q(x_t|x_0)
+    steps = diffusion_steps.view(B, 1)
 
-    # Fast path: original DiffWave (eps-prediction, unweighted) — unchanged numerics.
-    if parameterization == "eps" and min_snr_gamma is None:
+    # Self-conditioning: with prob 0.5, feed a detached x0 estimate from a no-grad
+    # pass; otherwise feed zeros (matching the first inference step).
+    x_self = None
+    if self_cond:
+        x_self = torch.zeros_like(audio)
+        if torch.rand(1).item() < 0.5:
+            with torch.no_grad():
+                pred0 = net((x_t, steps), mel_spec=mel_spec, x_self_cond=x_self)
+                x_self = _pred_to_x0(pred0, x_t, sqrt_abar, sqrt_1m_abar, parameterization).detach()
+
+    # Only pass x_self_cond when self-conditioning (WaveNet.forward has no such arg).
+    extra = {"x_self_cond": x_self} if self_cond else {}
+    prediction = net((x_t, steps), mel_spec=mel_spec, **extra)
+
+    # Fast path: original DiffWave (eps, unweighted, no STFT) — unchanged numerics.
+    if parameterization == "eps" and min_snr_gamma is None and stft_w == 0.0:
         return loss_fn(prediction, z)
 
     if parameterization == "eps":
         target = z
     elif parameterization == "v":
-        # v-prediction (Salimans & Ho 2022): v = sqrt(abar)*eps - sqrt(1-abar)*x0
-        target = sqrt_abar * z - sqrt_1m_abar * audio
+        target = sqrt_abar * z - sqrt_1m_abar * audio  # v = sqrt(abar)*eps - sqrt(1-abar)*x0
     else:
         raise ValueError(f"Unknown parameterization {parameterization!r} (use 'eps' or 'v')")
 
     se = (prediction - target) ** 2                        # (B,1,L)
     if min_snr_gamma is None:
-        return se.mean()
+        loss = se.mean()
+    else:
+        # Min-SNR-gamma weighting (Hang et al. 2023). SNR = abar / (1-abar).
+        snr = abar / (1 - abar)
+        clamped = torch.clamp(snr, max=min_snr_gamma)
+        weight = clamped / snr if parameterization == "eps" else clamped / (snr + 1)
+        loss = (weight * se).mean()
 
-    # Min-SNR-gamma loss weighting (Hang et al. 2023). SNR = abar / (1-abar).
-    snr = abar / (1 - abar)                                # (B,1,1)
-    clamped = torch.clamp(snr, max=min_snr_gamma)
-    if parameterization == "eps":
-        weight = clamped / snr
-    else:  # "v"
-        weight = clamped / (snr + 1)
-    return (weight * se).mean()
+    if stft_w > 0.0:
+        x0_hat = _pred_to_x0(prediction, x_t, sqrt_abar, sqrt_1m_abar, parameterization)
+        loss = loss + stft_w * multi_resolution_stft_loss(x0_hat, audio)
+    return loss
 
 
 

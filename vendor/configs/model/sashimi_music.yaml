@@ -6,6 +6,7 @@ diffusion_step_embed_dim_in: 128
 diffusion_step_embed_dim_mid: 512
 diffusion_step_embed_dim_out: 512
 unet: true
+self_conditioning: false  # true = feed model its own prev x0 estimate (Chen 2022). Changes input channels.
 # d_model=64 is a safe A100 starting point at ~44k-sample clips. Scale to 128
 # (the SC09 paper setting) once you confirm the pipeline trains and memory allows:
 #   python train.py experiment=music model.d_model=128

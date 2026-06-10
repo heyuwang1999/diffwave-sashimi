@@ -38,6 +38,8 @@ def sampling(net, size, diffusion_hyperparams, condition=None):
     _dh = diffusion_hyperparams
     T, Alpha, Alpha_bar, Sigma = _dh["T"], _dh["Alpha"], _dh["Alpha_bar"], _dh["Sigma"]
     parameterization = _dh.get("parameterization", "eps")
+    self_cond = getattr(net, "self_conditioning", False) or \
+        getattr(getattr(net, "module", None), "self_conditioning", False)
     assert len(Alpha) == T
     assert len(Alpha_bar) == T
     assert len(Sigma) == T
@@ -46,16 +48,22 @@ def sampling(net, size, diffusion_hyperparams, condition=None):
     print('begin sampling, total number of reverse steps = %s' % T)
 
     x = torch.normal(0, 1, size=size).cuda()
+    x_self = torch.zeros(size).cuda() if self_cond else None
     with torch.no_grad():
         for t in tqdm(range(T-1, -1, -1)):
             diffusion_steps = (t * torch.ones((size[0], 1))).cuda()  # use the corresponding reverse step
-            model_out = net((x, diffusion_steps,), mel_spec=condition)
+            extra = {"x_self_cond": x_self} if self_cond else {}  # WaveNet.forward has no such arg
+            model_out = net((x, diffusion_steps,), mel_spec=condition, **extra)
+            sqrt_abar_t, sqrt_1m_abar_t = torch.sqrt(Alpha_bar[t]), torch.sqrt(1-Alpha_bar[t])
             if parameterization == "v":
                 # recover eps from v: eps = sqrt(1-abar)*x_t + sqrt(abar)*v
-                epsilon_theta = torch.sqrt(1-Alpha_bar[t]) * x + torch.sqrt(Alpha_bar[t]) * model_out
+                epsilon_theta = sqrt_1m_abar_t * x + sqrt_abar_t * model_out
             else:
                 epsilon_theta = model_out  # predict \epsilon according to \epsilon_\theta
-            x = (x - (1-Alpha[t])/torch.sqrt(1-Alpha_bar[t]) * epsilon_theta) / torch.sqrt(Alpha[t])  # update x_{t-1} to \mu_\theta(x_t)
+            if self_cond:
+                # carry the current x0 estimate into the next (lower-noise) step
+                x_self = (x - sqrt_1m_abar_t * epsilon_theta) / sqrt_abar_t
+            x = (x - (1-Alpha[t])/sqrt_1m_abar_t * epsilon_theta) / torch.sqrt(Alpha[t])  # update x_{t-1} to \mu_\theta(x_t)
             if t > 0:
                 x = x + Sigma[t] * torch.normal(0, 1, size=size).cuda()  # add the variance term to x_{t-1}
     return x

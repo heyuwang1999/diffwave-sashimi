@@ -14,8 +14,12 @@ diffusion:
   beta: null
   # Tier-0 fidelity knobs (defaults below == original DiffWave; baseline unchanged).
   # A/B by overriding on the CLI or using experiment=music_vpred.
-  parameterization: eps   # "eps" (original) or "v" (v-prediction)
+  parameterization: eps    # "eps" (original) or "v" (v-prediction)
   min_snr_gamma: null      # e.g. 5.0 to enable Min-SNR-gamma loss weighting
+  schedule: linear         # "linear" (original) or "cosine" (Nichol & Dhariwal)
+  stft_loss_weight: 0.0    # e.g. 0.1 to add multi-resolution STFT loss on x0
+# Self-conditioning is a model flag (changes input channels): model.self_conditioning=true
+# Use a distinct train.name for any A/B variant so checkpoints don't collide.
 
 train:
   batch_size_per_gpu: 8      # A100 40GB headroom at d_model=64, L~44k; lower to 4 on L4/16GB

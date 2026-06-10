@@ -20,15 +20,19 @@ the continuation formulation, not model size.
 ~2 s. Establishes the reference numbers in the eval harness.
 
 **Tier 0 — fidelity recipe upgrades (do first; low risk, no architecture change).**
-Order by ROI:
-1. **v-prediction + Min-SNR-γ loss weighting** (Salimans 2022; Hang 2023) — better
-   fidelity and faster convergence (matters under bounded hours).
-2. **EDM/Karras noise schedule + preconditioning** (Karras 2022).
-3. **Self-conditioning** (Chen 2022 / RIN) — near-free quality bump.
-4. **Multi-resolution STFT auxiliary loss** on predicted x₀ — sharper highs.
-5. **DPM-Solver++ / DDIM sampling** — ~20–50 steps at parity with T=200 (faster
-   iteration, doesn't change training).
-Each lands behind a config flag so we can toggle and compare.
+Order by ROI (✅ = implemented, config-gated, smoke-tested):
+1. ✅ **v-prediction + Min-SNR-γ loss weighting** (Salimans 2022; Hang 2023) —
+   `diffusion.parameterization=v`, `diffusion.min_snr_gamma=5.0`.
+2. ✅ **Cosine noise schedule** (Nichol & Dhariwal 2021) — `diffusion.schedule=cosine`.
+   (Full EDM/Karras preconditioning deferred — bigger reformulation, lower marginal
+   gain than the items here.)
+3. ✅ **Self-conditioning** (Chen 2022) — `model.self_conditioning=true` (changes
+   input channels → use a distinct `train.name`; not checkpoint-compatible with baseline).
+4. ✅ **Multi-resolution STFT auxiliary loss** on x₀ (Yamamoto 2020) —
+   `diffusion.stft_loss_weight=0.1` (directly targets cleanliness).
+5. ⬜ **DPM-Solver++ / DDIM sampling** — deprioritized (speed, not your ranked axis);
+   easy drop-in later for faster iteration.
+Each is a config flag, defaults == original DiffWave, so the baseline is unchanged.
 
 **Tier 2 — continuation faithfulness (the goal).**
 1. **Cross-attention conditioning** from the noisy target to a context encoder

@@ -136,6 +136,49 @@ for param in ("eps", "v"):
     s = sampling(net, (1, 1, TINY_L), dh_s)
     check(f"sampling finite [{param}]", tuple(s.shape) == (1, 1, TINY_L) and bool(torch.isfinite(s).all()))
 
+print("\n=== 7. Tier-0: cosine schedule + STFT aux loss + self-conditioning ===")
+from train import multi_resolution_stft_loss
+
+# cosine schedule: Alpha_bar must be strictly decreasing in [0,1]
+dh_cos = calc_diffusion_hyperparams(T=50, beta_0=1e-4, beta_T=0.02, beta=None,
+                                    fast=False, schedule="cosine")
+abar = dh_cos["Alpha_bar"]
+check("cosine schedule: len==T, in (0,1], decreasing",
+      len(abar) == 50 and float(abar.max()) <= 1.0 and bool((abar[1:] <= abar[:-1]).all()),
+      f"abar[0]={float(abar[0]):.4f} abar[-1]={float(abar[-1]):.4f}")
+net.train(); net.zero_grad()
+lc = training_loss(net, nn.MSELoss(), x, dh_cos, mel_spec=None)
+check("training_loss finite under cosine schedule", bool(torch.isfinite(lc)), f"loss={lc.item():.4f}")
+
+# multi-resolution STFT loss: 0 for identical, >0 for different
+sig = torch.randn(2, 1, TINY_L)
+check("STFT loss == 0 for identical signals", float(multi_resolution_stft_loss(sig, sig)) < 1e-5)
+check("STFT loss > 0 for different signals", float(multi_resolution_stft_loss(sig, torch.randn(2, 1, TINY_L))) > 0)
+dh_stft = calc_diffusion_hyperparams(T=50, beta_0=1e-4, beta_T=0.02, beta=None,
+                                     fast=False, parameterization="v", stft_loss_weight=0.1)
+net.zero_grad()
+ls = training_loss(net, nn.MSELoss(), x, dh_stft, mel_spec=None)
+ls.backward()
+gok = any(p.grad is not None and torch.isfinite(p.grad).all() for p in net.parameters())
+check("training_loss + STFT aux: finite + grads", bool(torch.isfinite(ls)) and gok, f"loss={ls.item():.4f}")
+
+# self-conditioning: model takes an extra input channel; train + sample must work
+sc_cfg = OmegaConf.create(dict(model_cfg)); sc_cfg["_name_"] = "sashimi"; sc_cfg["self_conditioning"] = True
+sc_net = construct_model(sc_cfg)
+check("self-cond model has self_conditioning=True", getattr(sc_net, "self_conditioning", False))
+out_zero = sc_net((x, steps), x_self_cond=None)                    # None -> zeros internally
+out_cond = sc_net((x, steps), x_self_cond=torch.randn_like(x))
+check("self-cond forward shapes ok (None and provided)",
+      tuple(out_zero.shape) == (2, 1, TINY_L) and tuple(out_cond.shape) == (2, 1, TINY_L))
+sc_net.train(); sc_net.zero_grad()
+lsc = training_loss(sc_net, nn.MSELoss(), x, dh, mel_spec=None)     # detects self_cond via getattr
+lsc.backward()
+gok2 = any(p.grad is not None and torch.isfinite(p.grad).all() for p in sc_net.parameters())
+check("self-cond training_loss: finite + grads (two-pass)", bool(torch.isfinite(lsc)) and gok2, f"loss={lsc.item():.4f}")
+sc_net.eval()
+ssc = sampling(sc_net, (1, 1, TINY_L), calc_diffusion_hyperparams(T=15, beta_0=1e-4, beta_T=0.02, beta=None, fast=False))
+check("self-cond sampling: finite + shape", tuple(ssc.shape) == (1, 1, TINY_L) and bool(torch.isfinite(ssc).all()))
+
 print("\n" + "=" * 50)
 n_pass = sum(results); n_tot = len(results)
 print(f"{n_pass}/{n_tot} checks passed")

@@ -199,6 +199,7 @@ class Sashimi(nn.Module):
             unconditional=False,
             mel_upsample=[16,16],
             L=16000,
+            self_conditioning=False,
             **kwargs,
         ):
         super().__init__()
@@ -210,9 +211,14 @@ class Sashimi(nn.Module):
         self.expand = expand
         self.ff = ff
         self.pool = pool
+        self.in_channels = in_channels
+        # Self-conditioning (Chen et al. 2022): the model also sees its own
+        # previous x0 estimate, concatenated as an extra input channel.
+        self.self_conditioning = self_conditioning
+        conv_in = in_channels * 2 if self_conditioning else in_channels
 
         # initial conv1x1 with relu
-        self.init_conv = nn.Sequential(Conv(in_channels, d_model, kernel_size=1), nn.ReLU())
+        self.init_conv = nn.Sequential(Conv(conv_in, d_model, kernel_size=1), nn.ReLU())
 
         # self.num_res_layers = num_res_layers
         self.diffusion_step_embed_dim_in = diffusion_step_embed_dim_in
@@ -274,10 +280,15 @@ class Sashimi(nn.Module):
                                         nn.ReLU(),
                                         ZeroConv1d(d_model, out_channels))
 
-    def forward(self, input_data, mel_spec=None):
+    def forward(self, input_data, mel_spec=None, x_self_cond=None):
         audio, diffusion_steps = input_data
 
         x = audio
+        if self.self_conditioning:
+            # concat previous x0 estimate (zeros if none) as extra input channel(s)
+            if x_self_cond is None:
+                x_self_cond = torch.zeros_like(audio)
+            x = torch.cat([x, x_self_cond], dim=1)
         x = self.init_conv(x)
 
         # x = self.residual_layer((x, diffusion_steps))

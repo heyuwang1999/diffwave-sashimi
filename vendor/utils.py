@@ -1,4 +1,5 @@
 import os
+import math
 import numpy as np
 import torch
 
@@ -119,7 +120,8 @@ def local_directory(name, model_cfg, diffusion_cfg, dataset_cfg, output_director
 # Utilities for diffusion models
 
 def calc_diffusion_hyperparams(T, beta_0, beta_T, beta=None, fast=False,
-                               parameterization="eps", min_snr_gamma=None):
+                               parameterization="eps", min_snr_gamma=None,
+                               schedule="linear", stft_loss_weight=0.0):
     """
     Compute diffusion process hyperparameters
 
@@ -144,8 +146,18 @@ def calc_diffusion_hyperparams(T, beta_0, beta_T, beta=None, fast=False,
     if fast and beta is not None:
         Beta = torch.tensor(beta)
         T = len(beta)
-    else:
+    elif schedule == "cosine":
+        # Nichol & Dhariwal 2021 cosine schedule: allocate steps more evenly in
+        # perceptual/SNR space than linear-beta (often better fidelity).
+        s = 0.008
+        t = torch.linspace(0, 1, T + 1)
+        f = torch.cos((t + s) / (1 + s) * math.pi / 2) ** 2
+        abar = f / f[0]
+        Beta = (1 - abar[1:] / abar[:-1]).clamp(1e-8, 0.999)
+    elif schedule == "linear":
         Beta = torch.linspace(beta_0, beta_T, T)
+    else:
+        raise ValueError(f"Unknown schedule {schedule!r} (use 'linear' or 'cosine')")
     Alpha = 1 - Beta
     Alpha_bar = Alpha + 0
     Beta_tilde = Beta + 0
@@ -158,6 +170,7 @@ def calc_diffusion_hyperparams(T, beta_0, beta_T, beta=None, fast=False,
     _dh["T"], _dh["Beta"], _dh["Alpha"], _dh["Alpha_bar"], _dh["Sigma"] = T, Beta.cuda(), Alpha.cuda(), Alpha_bar.cuda(), Sigma
     _dh["parameterization"] = parameterization
     _dh["min_snr_gamma"] = min_snr_gamma
+    _dh["stft_loss_weight"] = stft_loss_weight
     return _dh
 
 
