@@ -20,6 +20,7 @@ generate:
   mel_name: null # Name of specific spectrogram to condition on (set to null for unconditional, set to an audio file name for vocoding)
   context_path: null # Continuation: path to a context audio clip to condition on (requires model.context_conditioning)
   guidance: 1.0 # Classifier-free guidance scale for continuation (1.0 = none; try 2-5)
+  rollout_chunks: 1 # >1 = sliding-window long continuation (chains the sampler; output = rollout_chunks * segment_length)
 
 distributed:
   dist_backend: nccl

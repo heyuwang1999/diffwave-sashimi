@@ -277,6 +277,14 @@ sa = sampling(xa_net, (2, 1, TINY_L),
 check("cross_attn guided sampling: finite + shape",
       tuple(sa.shape) == (2, 1, TINY_L) and bool(torch.isfinite(sa).all()))
 
+print("\n=== 11. Tier-2.3: sliding-window long-continuation rollout ===")
+from generate import rollout_continuation
+dh_r = calc_diffusion_hyperparams(T=10, beta_0=1e-4, beta_T=0.02, beta=None, fast=False, parameterization="v")
+roll = rollout_continuation(cc_net, dh_r, torch.randn(1, 1, TINY_L),
+                            n_chunks=3, chunk_len=TINY_L, context_len=TINY_L, guidance=2.0)
+check("rollout length == n_chunks*chunk_len", tuple(roll.shape) == (1, 1, 3 * TINY_L), str(tuple(roll.shape)))
+check("rollout output finite", bool(torch.isfinite(roll).all()))
+
 print("\n" + "=" * 50)
 n_pass = sum(results); n_tot = len(results)
 print(f"{n_pass}/{n_tot} checks passed")

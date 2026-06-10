@@ -43,8 +43,14 @@ Each is a config flag, defaults == original DiffWave, so the baseline is unchang
 2. ✅ **Cross-attention conditioning**: the UNet bottleneck attends to a sequence
    of context tokens (richer than the global vector). `model.context_mode=cross_attn`
    or `experiment=music_continuation_xattn`. A/B vs the global baseline.
-3. ⬜ **Diffusion Forcing / AR-diffusion** (Chen 2024): per-frame noise levels with
-   clean past + noisy future → stable arbitrarily-long rollout continuation.
+3. ✅ **Long continuation via sliding-window rollout**: chain the context-conditioned
+   sampler — generate a chunk, feed it back as context, repeat
+   (`generate.rollout_chunks=N`). Gives arbitrarily-long output now, low risk.
+   ⬜ **Diffusion Forcing / AR-diffusion** (Chen 2024) — per-frame noise levels for
+   *better* long-range stability — deferred: it's a core-contract architecture
+   change (per-frame noise, in-sequence conditioning, custom rollout) best done
+   attended, not in an unattended pass. The sliding-window rollout covers the
+   immediate need; revisit DF if rollout drifts over long horizons.
 
 ✅ **Continuation generate.py CLI**: `generate.context_path=<clip> generate.guidance=3.0`
 conditions on the last `context_length` samples of the clip and writes both the

@@ -100,6 +100,24 @@ def load_context(context_path, ctx_len, sampling_rate):
 
 
 @torch.no_grad()
+def rollout_continuation(net, diffusion_hyperparams, context, n_chunks, chunk_len,
+                         context_len, guidance=1.0):
+    """Sliding-window long continuation: generate one chunk conditioned on the
+    current context, append it, slide the context window, and repeat. Produces
+    arbitrarily long output by chaining the context-conditioned sampler.
+
+    context: (1, 1, context_len) initial context. Returns (1, 1, n_chunks*chunk_len).
+    """
+    ctx = context
+    chunks = []
+    for c in range(n_chunks):
+        gen = sampling(net, (1, 1, chunk_len), diffusion_hyperparams, context=ctx, guidance=guidance)
+        chunks.append(gen)
+        ctx = torch.cat([ctx, gen], dim=-1)[..., -context_len:]  # slide window over running audio
+    return torch.cat(chunks, dim=-1)
+
+
+@torch.no_grad()
 def generate(
         rank,
         diffusion_cfg,
@@ -111,7 +129,7 @@ def generate(
         batch_size=None,
         ckpt_smooth=None,
         mel_path=None, mel_name=None,
-        context_path=None, guidance=1.0,
+        context_path=None, guidance=1.0, rollout_chunks=1,
         dataloader=None,
     ):
     """
@@ -221,17 +239,28 @@ def generate(
 
     generated_audio = []
 
-    for _ in range(n_samples // batch_size):
-        _audio = sampling(
-            net,
-            (batch_size,1,audio_length),
-            diffusion_hyperparams,
-            condition=ground_truth_mel_spectrogram,
-            context=context_batch,
-            guidance=guidance,
-        )
-        generated_audio.append(_audio)
-    generated_audio = torch.cat(generated_audio, dim=0)
+    if context_batch is not None and rollout_chunks > 1:
+        # Long continuation by sliding-window rollout (one sample at a time).
+        ctx_len = context_batch.shape[-1]
+        for _ in range(n_samples):
+            roll = rollout_continuation(net, diffusion_hyperparams, context_batch[:1],
+                                        rollout_chunks, audio_length, ctx_len, guidance)
+            generated_audio.append(roll)
+        generated_audio = torch.cat(generated_audio, dim=0)
+        print(f'rollout: {rollout_chunks} chunks x {audio_length} = '
+              f'{rollout_chunks*audio_length} samples per continuation')
+    else:
+        for _ in range(n_samples // batch_size):
+            _audio = sampling(
+                net,
+                (batch_size,1,audio_length),
+                diffusion_hyperparams,
+                condition=ground_truth_mel_spectrogram,
+                context=context_batch,
+                guidance=guidance,
+            )
+            generated_audio.append(_audio)
+        generated_audio = torch.cat(generated_audio, dim=0)
 
     end.record()
     torch.cuda.synchronize()
