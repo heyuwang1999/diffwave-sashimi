@@ -45,9 +45,10 @@ Each is a config flag, defaults == original DiffWave, so the baseline is unchang
 3. ⬜ **Diffusion Forcing / AR-diffusion** (Chen 2024): per-frame noise levels with
    clean past + noisy future → stable arbitrarily-long rollout continuation.
 
-Remaining glue: a continuation-aware generate.py CLI (load a context clip, sweep
-guidance). Auto-samples during continuation training are currently unconditional
-(harmless; generate() doesn't pass a context yet).
+✅ **Continuation generate.py CLI**: `generate.context_path=<clip> generate.guidance=3.0`
+conditions on the last `context_length` samples of the clip and writes both the
+continuation and a context+continuation concat (`*_full.wav`) for listening.
+(Auto-samples during training remain unconditional — harmless.)
 
 **Tier 1 — backbone (only if Tier 0/2 plateau).** Swap S4→Mamba/S5 selective SSM;
 add windowed self-attention at the UNet bottleneck (modern SSM+attention hybrid).

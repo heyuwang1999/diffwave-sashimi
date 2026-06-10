@@ -18,6 +18,8 @@ generate:
   batch_size: null # Number of samples to generate at once per GPU. null means max (equal to samples_per_gpu)
   mel_path: null # Folder of preprocessed spectrograms (optional)
   mel_name: null # Name of specific spectrogram to condition on (set to null for unconditional, set to an audio file name for vocoding)
+  context_path: null # Continuation: path to a context audio clip to condition on (requires model.context_conditioning)
+  guidance: 1.0 # Classifier-free guidance scale for continuation (1.0 = none; try 2-5)
 
 distributed:
   dist_backend: nccl

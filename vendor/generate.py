@@ -80,6 +80,25 @@ def sampling(net, size, diffusion_hyperparams, condition=None, context=None, gui
     return x
 
 
+def load_context(context_path, ctx_len, sampling_rate):
+    """Load a context clip and return its last `ctx_len` samples as (1, 1, ctx_len),
+    resampled to sampling_rate, mono, peak-normalized. Short clips are tiled."""
+    import torchaudio
+    from dataloaders.music import load_audio
+    wav, sr = load_audio(context_path)
+    wav = wav.mean(dim=0)  # (T,)
+    if sr != sampling_rate:
+        wav = torchaudio.transforms.Resample(sr, sampling_rate)(wav.unsqueeze(0)).squeeze(0)
+    if wav.numel() < ctx_len:
+        reps = (ctx_len + wav.numel() - 1) // wav.numel() + 1
+        wav = wav.repeat(reps)
+    ctx = wav[-ctx_len:]                       # the audio immediately preceding the target
+    peak = ctx.abs().max()
+    if peak > 1e-8:
+        ctx = ctx / peak
+    return ctx.view(1, 1, -1)
+
+
 @torch.no_grad()
 def generate(
         rank,
@@ -92,6 +111,7 @@ def generate(
         batch_size=None,
         ckpt_smooth=None,
         mel_path=None, mel_name=None,
+        context_path=None, guidance=1.0,
         dataloader=None,
     ):
     """
@@ -183,6 +203,15 @@ def generate(
         # predefine audio shape
         audio_length = dataset_cfg["segment_length"]  # 16000
         ground_truth_mel_spectrogram = None
+
+    # Continuation: condition on the preceding audio of a context clip.
+    context_batch = None
+    if model_cfg.get("context_conditioning", False) and context_path is not None:
+        ctx_len = int(dataset_cfg.get("context_length", dataset_cfg["segment_length"]))
+        ctx = load_context(context_path, ctx_len, dataset_cfg["sampling_rate"])
+        context_batch = ctx.repeat(batch_size, 1, 1).cuda()
+        print(f'continuation: conditioning on last {ctx_len} samples of '
+              f'{context_path} | guidance={guidance}')
     print(f'begin generating audio of length {audio_length} | {n_samples} samples with batch size {batch_size}')
 
     # inference
@@ -198,6 +227,8 @@ def generate(
             (batch_size,1,audio_length),
             diffusion_hyperparams,
             condition=ground_truth_mel_spectrogram,
+            context=context_batch,
+            guidance=guidance,
         )
         generated_audio.append(_audio)
     generated_audio = torch.cat(generated_audio, dim=0)
@@ -212,9 +243,17 @@ def generate(
     # save audio to .wav
     for i in range(n_samples):
         outfile = '{}k_{}.wav'.format(ckpt_iter // 1000, n_samples*rank + i)
+        gen_np = generated_audio[i].squeeze().cpu().numpy()
         wavwrite(os.path.join(output_directory, outfile),
                     dataset_cfg["sampling_rate"],
-                    generated_audio[i].squeeze().cpu().numpy())
+                    gen_np)
+
+        # For continuation, also save context+continuation concatenated for listening.
+        if context_batch is not None:
+            ctx_np = context_batch[0].squeeze().cpu().numpy()
+            wavwrite(os.path.join(output_directory, outfile.replace('.wav', '_full.wav')),
+                        dataset_cfg["sampling_rate"],
+                        np.concatenate([ctx_np, gen_np]))
 
         # save audio to tensorboard
         # tb = SummaryWriter(os.path.join('exp', local_path, tensorboard_directory))

@@ -230,6 +230,18 @@ sg = sampling(cc_net, (2, 1, TINY_L), dh_s, context=torch.randn(2, 1, TINY_L), g
 check("guided continuation sampling: finite + shape",
       tuple(sg.shape) == (2, 1, TINY_L) and bool(torch.isfinite(sg).all()))
 
+print("\n=== 9. Tier-2: continuation generate CLI (load_context) ===")
+import tempfile as _tmp, os as _os, numpy as _np, soundfile as _sf
+from generate import load_context
+_d = _tmp.mkdtemp(prefix="ctx_")
+_sf.write(_os.path.join(_d, "c.wav"), _np.sin(_np.linspace(0, 60, SR)).astype("float32"), SR)
+cc = load_context(_os.path.join(_d, "c.wav"), TINY_L, SR)
+check("load_context shape (1,1,ctx_len)", tuple(cc.shape) == (1, 1, TINY_L), str(tuple(cc.shape)))
+check("load_context peak-normalized", float(cc.abs().max()) <= 1.0 + 1e-4)
+_sf.write(_os.path.join(_d, "short.wav"), (_np.ones(TINY_L // 4) * 0.2).astype("float32"), SR)
+cs = load_context(_os.path.join(_d, "short.wav"), TINY_L, SR)
+check("load_context tiles short clips to ctx_len", tuple(cs.shape) == (1, 1, TINY_L))
+
 print("\n" + "=" * 50)
 n_pass = sum(results); n_tot = len(results)
 print(f"{n_pass}/{n_tot} checks passed")
