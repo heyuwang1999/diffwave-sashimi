@@ -7,8 +7,10 @@ diffusion_step_embed_dim_mid: 512
 diffusion_step_embed_dim_out: 512
 unet: true
 self_conditioning: false
-# Milestone-2 continuation: encode preceding audio and add to the step embedding.
+# Milestone-2 continuation: encode preceding audio to condition generation.
 context_conditioning: true
+context_mode: global       # "global" (add summary to step embed) or "cross_attn" (bottleneck attention)
+n_context_tokens: 64       # number of context tokens for cross_attn mode
 context_d_model: 64
 context_n_blocks: 6
 d_model: 64

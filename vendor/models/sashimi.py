@@ -7,7 +7,7 @@ from einops import rearrange
 
 from models.utils import calc_diffusion_step_embedding
 from models.s4 import S4
-from models.context_encoder import ContextEncoder
+from models.context_encoder import ContextEncoder, CrossAttention
 
 class TransposedLN(nn.Module):
     def __init__(self, d):
@@ -204,6 +204,8 @@ class Sashimi(nn.Module):
             context_conditioning=False,
             context_d_model=64,
             context_n_blocks=6,
+            context_mode="global",      # "global" (add to step embed) or "cross_attn" (bottleneck)
+            n_context_tokens=64,
             **kwargs,
         ):
         super().__init__()
@@ -235,12 +237,19 @@ class Sashimi(nn.Module):
         # add it to the diffusion-step embedding (global / FiLM-style). The encoder
         # output matches diffusion_step_embed_dim_out so it slots into the same path.
         self.context_conditioning = context_conditioning
+        self.context_mode = context_mode
         if context_conditioning:
             self.context_encoder = ContextEncoder(
                 d_cond=diffusion_step_embed_dim_out,
                 d_model=context_d_model,
                 n_blocks=context_n_blocks,
+                n_context_tokens=n_context_tokens,
             )
+            if context_mode == "cross_attn":
+                # cross-attention at the UNet bottleneck (cheapest sequence length)
+                center_dim = d_model * (expand ** len(pool))
+                self.cross_attn = CrossAttention(d_query=center_dim,
+                                                 d_context=diffusion_step_embed_dim_out)
 
         def _residual(d, L):
             return DiffWaveBlock(
@@ -314,10 +323,14 @@ class Sashimi(nn.Module):
         diffusion_step_embed = swish(self.fc_t1(diffusion_step_embed))
         diffusion_step_embed = swish(self.fc_t2(diffusion_step_embed))
 
-        # Add context conditioning. context=None is the classifier-free "null"
-        # condition (unconditional pass), so we simply add nothing.
+        # Context conditioning. context=None is the classifier-free "null" condition
+        # (unconditional pass), so we add/attend to nothing.
+        ctx_tokens = None
         if self.context_conditioning and context is not None:
-            diffusion_step_embed = diffusion_step_embed + self.context_encoder(context)
+            if self.context_mode == "cross_attn":
+                ctx_tokens = self.context_encoder.tokens(context)  # applied at the bottleneck
+            else:  # "global": add the context summary to the step embedding
+                diffusion_step_embed = diffusion_step_embed + self.context_encoder(context)
 
         # pass all UNet layers
         # Down blocks
@@ -330,6 +343,8 @@ class Sashimi(nn.Module):
         outputs.append(x)
         for layer in self.c_layers:
             x = layer(x, diffusion_step_embed, mel_spec=mel_spec)
+        if ctx_tokens is not None:
+            x = x + self.cross_attn(x, ctx_tokens)  # cross-attend to context at the bottleneck
         x = x + outputs.pop()
 
         for layer in self.u_layers:

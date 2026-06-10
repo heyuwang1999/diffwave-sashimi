@@ -1,0 +1,38 @@
+# @package _global_
+# Continuation with CROSS-ATTENTION conditioning (Tier 2.2): the UNet bottleneck
+# attends to a sequence of context tokens, richer than the global-vector baseline
+# (experiment=music_continuation). A/B these two.
+#
+# Train:    python train.py experiment=music_continuation_xattn
+# Generate: python generate.py experiment=music_continuation_xattn \
+#             generate.ckpt_iter=max generate.context_path=<clip> generate.guidance=3.0
+defaults:
+  - /model: sashimi_music_cont
+  - /dataset: music_continuation
+
+model:
+  context_mode: cross_attn
+  n_context_tokens: 64
+
+diffusion:
+  T: 200
+  beta_0: 0.0001
+  beta_T: 0.02
+  beta: null
+  parameterization: v
+  min_snr_gamma: 5.0
+  schedule: linear
+  stft_loss_weight: 0.0
+  context_cfg_dropout: 0.1
+
+train:
+  name: cont_xattn
+  batch_size_per_gpu: 4
+  n_iters: 500001
+  iters_per_ckpt: 5000
+  iters_per_logging: 100
+  learning_rate: 2e-4
+
+generate:
+  n_samples: 4
+  batch_size: null

@@ -242,6 +242,41 @@ _sf.write(_os.path.join(_d, "short.wav"), (_np.ones(TINY_L // 4) * 0.2).astype("
 cs = load_context(_os.path.join(_d, "short.wav"), TINY_L, SR)
 check("load_context tiles short clips to ctx_len", tuple(cs.shape) == (1, 1, TINY_L))
 
+print("\n=== 10. Tier-2.2: cross-attention context conditioning ===")
+xa_cfg = OmegaConf.create(dict(model_cfg))
+xa_cfg["_name_"] = "sashimi"; xa_cfg["context_conditioning"] = True
+xa_cfg["context_mode"] = "cross_attn"; xa_cfg["n_context_tokens"] = 8
+xa_cfg["context_d_model"] = 16; xa_cfg["context_n_blocks"] = 2
+xa_net = construct_model(xa_cfg)
+check("cross_attn model built (has cross_attn + mode)",
+      hasattr(xa_net, "cross_attn") and xa_net.context_mode == "cross_attn")
+# Nudge the zero-inits (final ZeroConv + cross-attn to_out, both identity at start)
+# so the checks test the wiring rather than the initialization.
+with torch.no_grad():
+    for p in list(xa_net.final_conv.parameters()) + list(xa_net.cross_attn.to_out.parameters()):
+        p.add_(0.1 * torch.randn_like(p))
+ctxb = torch.randn(2, 1, TINY_L)
+oa = xa_net((x, steps), context=ctxb)
+on = xa_net((x, steps), context=None)
+check("cross_attn forward shapes (with/without context)",
+      tuple(oa.shape) == (2, 1, TINY_L) and tuple(on.shape) == (2, 1, TINY_L))
+check("cross_attn context changes output", not torch.allclose(oa, on))
+dh_xa = calc_diffusion_hyperparams(T=50, beta_0=1e-4, beta_T=0.02, beta=None, fast=False,
+                                   parameterization="v", context_cfg_dropout=0.0)
+xa_net.train(); xa_net.zero_grad()
+la = training_loss(xa_net, nn.MSELoss(), x, dh_xa, context=ctxb)
+la.backward()
+ca_grad = any(p.grad is not None and float(p.grad.abs().sum()) > 0 for p in xa_net.cross_attn.parameters())
+enc_grad = any(p.grad is not None and float(p.grad.abs().sum()) > 0 for p in xa_net.context_encoder.parameters())
+check("cross_attn training_loss finite + cross_attn/encoder grads",
+      bool(torch.isfinite(la)) and ca_grad and enc_grad, f"loss={la.item():.4f}")
+xa_net.eval()
+sa = sampling(xa_net, (2, 1, TINY_L),
+              calc_diffusion_hyperparams(T=15, beta_0=1e-4, beta_T=0.02, beta=None, fast=False, parameterization="v"),
+              context=torch.randn(2, 1, TINY_L), guidance=3.0)
+check("cross_attn guided sampling: finite + shape",
+      tuple(sa.shape) == (2, 1, TINY_L) and bool(torch.isfinite(sa).all()))
+
 print("\n" + "=" * 50)
 n_pass = sum(results); n_tot = len(results)
 print(f"{n_pass}/{n_tot} checks passed")

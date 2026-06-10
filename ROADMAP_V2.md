@@ -40,8 +40,9 @@ Each is a config flag, defaults == original DiffWave, so the baseline is unchang
    robust baseline). `experiment=music_continuation` (model.context_conditioning).
 1. ✅ **Classifier-free guidance**: train with context dropout
    (`diffusion.context_cfg_dropout`), scale at inference (`sampling(..., guidance=w)`).
-2. ⬜ **Cross-attention conditioning** from the noisy target to a *sequence* of
-   context features (richer than the global vector) — next continuation upgrade.
+2. ✅ **Cross-attention conditioning**: the UNet bottleneck attends to a sequence
+   of context tokens (richer than the global vector). `model.context_mode=cross_attn`
+   or `experiment=music_continuation_xattn`. A/B vs the global baseline.
 3. ⬜ **Diffusion Forcing / AR-diffusion** (Chen 2024): per-frame noise levels with
    clean past + noisy future → stable arbitrarily-long rollout continuation.
 
