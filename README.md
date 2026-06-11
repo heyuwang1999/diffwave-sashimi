@@ -40,12 +40,16 @@ files, one registration line in `vendor/dataloaders/__init__.py`, and the
 
 Target spec (your choices): **22.05 kHz mono, ~2 s clips, single A100/L4**.
 
-1. **Get the data in.** Drop your few long tracks into `vendor/data/music/`
-   (any of wav/flac/mp3/ogg/m4a). They are resampled to 22.05 kHz and
-   random-cropped to 2 s on the fly. Optional one-time clean-up + stats:
+1. **Get the data in.** Point `prepare_data.py` at a single long file *or* a
+   folder, in any format (wav/flac/mp3/m4a/ogg). It decodes → mono → resamples to
+   22.05 kHz → reserves a held-out tail, then training random-crops 2 s clips on
+   the fly. With ffmpeg present (default on Colab) it streams with **bounded
+   memory**, so a multi-hour file works on a normal runtime:
    ```bash
-   python scripts/prepare_data.py --in_dir raw_audio --out_dir vendor/data/music --sr 22050 --holdout_frac 0.1
+   python scripts/prepare_data.py --in_dir /path/to/mymix.mp3 --out_dir vendor/data/music --sr 22050 --holdout_frac 0.1
    ```
+   (The training dataset loads the cleaned audio into RAM — fine up to a few hours
+   of mono 22.05 kHz, ~1.3 GB for 4 h.)
 2. **Train** (from `vendor/`, where Hydra and the relative imports expect to run):
    ```bash
    cd vendor
