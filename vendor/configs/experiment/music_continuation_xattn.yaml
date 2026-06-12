@@ -27,7 +27,7 @@ diffusion:
 
 train:
   name: cont_xattn
-  batch_size_per_gpu: 4
+  batch_size_per_gpu: 2         # cross-attn adds memory; 22-24GB L4/A10. A100: raise. OOM? 1.
   n_iters: 500001
   iters_per_ckpt: 5000
   iters_per_logging: 100

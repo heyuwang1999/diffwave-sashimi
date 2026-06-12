@@ -22,7 +22,7 @@ diffusion:
 # Use a distinct train.name for any A/B variant so checkpoints don't collide.
 
 train:
-  batch_size_per_gpu: 8      # A100 40GB headroom at d_model=64, L~44k; lower to 4 on L4/16GB
+  batch_size_per_gpu: 4      # safe on a 22-24GB L4/A10 at d_model=64, L~44k. A100 40GB: 8-16. OOM? use 2 or 1.
   n_iters: 500001
   iters_per_ckpt: 5000
   iters_per_logging: 100
