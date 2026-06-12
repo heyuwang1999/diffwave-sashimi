@@ -72,9 +72,23 @@ On Colab, see `notebooks/colab_quickstart.ipynb`. Install deps with
 `pool=[4,4]`). Default `44032 = 16 × 2752 ≈ 1.997 s`. The SaShiMi UNet pools the
 sequence and needs integer lengths at every stage.
 
-## Milestone 2 — continuation (designed, not yet wired)
+## Milestone 2 — continuation (implemented)
 
-Encode the *preceding* audio with a context encoder and inject it through
-DiffWave's existing per-block conditioning input (the same hook the vocoder uses
-for mel spectrograms). Scaffold + full design in
-[`music_continuation/`](music_continuation/) and [DESIGN.md](DESIGN.md).
+A context encoder summarizes the preceding audio and conditions generation
+(global / FiLM or bottleneck cross-attention), trained with classifier-free
+guidance. Train and generate:
+```bash
+cd vendor
+python train.py experiment=music_continuation          # global conditioning
+python train.py experiment=music_continuation_xattn     # cross-attention variant
+python generate.py experiment=music_continuation generate.ckpt_iter=max \
+    generate.context_path=data/music_holdout/<track>.wav generate.guidance=3.0 generate.gen_seconds=60
+```
+
+### Custom output length
+Unconditional samples are fixed at `segment_length` (~2 s) by design. For
+**arbitrary length**, use continuation: `generate.gen_seconds=N` (or
+`generate.rollout_chunks=K`) slides the window — generate a chunk, feed it back
+as context, repeat — to produce audio of any duration (trimmed to exactly
+`gen_seconds`). Design details in [ROADMAP_V2.md](ROADMAP_V2.md) and
+[DESIGN.md](DESIGN.md).

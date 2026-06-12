@@ -151,7 +151,7 @@ def generate(
         batch_size=None,
         ckpt_smooth=None,
         mel_path=None, mel_name=None,
-        context_path=None, guidance=1.0, rollout_chunks=1,
+        context_path=None, guidance=1.0, rollout_chunks=1, gen_seconds=None,
         sampler="ddpm", sampling_steps=None,
         dataloader=None,
     ):
@@ -251,8 +251,15 @@ def generate(
         ctx_len = int(dataset_cfg.get("context_length", dataset_cfg["segment_length"]))
         ctx = load_context(context_path, ctx_len, dataset_cfg["sampling_rate"])
         context_batch = ctx.repeat(batch_size, 1, 1).cuda()
+        # Custom length: derive the number of rollout chunks from a target duration.
+        if gen_seconds is not None:
+            import math
+            rollout_chunks = max(1, math.ceil(gen_seconds * dataset_cfg["sampling_rate"] / audio_length))
         print(f'continuation: conditioning on last {ctx_len} samples of '
-              f'{context_path} | guidance={guidance}')
+              f'{context_path} | guidance={guidance} | rollout_chunks={rollout_chunks}')
+    elif gen_seconds is not None:
+        print('NOTE: gen_seconds only applies to continuation (needs model.context_conditioning '
+              '+ generate.context_path); unconditional samples are fixed at segment_length.')
     print(f'begin generating audio of length {audio_length} | {n_samples} samples with batch size {batch_size}')
 
     # inference
@@ -299,6 +306,8 @@ def generate(
     for i in range(n_samples):
         outfile = '{}k_{}.wav'.format(ckpt_iter // 1000, n_samples*rank + i)
         gen_np = generated_audio[i].squeeze().cpu().numpy()
+        if gen_seconds is not None and context_batch is not None:
+            gen_np = gen_np[:int(gen_seconds * dataset_cfg["sampling_rate"])]  # trim to exact duration
         wavwrite(os.path.join(output_directory, outfile),
                     dataset_cfg["sampling_rate"],
                     gen_np)
