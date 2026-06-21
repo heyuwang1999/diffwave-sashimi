@@ -122,7 +122,7 @@ def local_directory(name, model_cfg, diffusion_cfg, dataset_cfg, output_director
 def calc_diffusion_hyperparams(T, beta_0, beta_T, beta=None, fast=False,
                                parameterization="eps", min_snr_gamma=None,
                                schedule="linear", stft_loss_weight=0.0,
-                               context_cfg_dropout=0.0):
+                               context_cfg_dropout=0.0, outpaint_uncond_prob=0.3):
     """
     Compute diffusion process hyperparameters
 
@@ -173,6 +173,7 @@ def calc_diffusion_hyperparams(T, beta_0, beta_T, beta=None, fast=False,
     _dh["min_snr_gamma"] = min_snr_gamma
     _dh["stft_loss_weight"] = stft_loss_weight
     _dh["context_cfg_dropout"] = context_cfg_dropout
+    _dh["outpaint_uncond_prob"] = outpaint_uncond_prob
     return _dh
 
 

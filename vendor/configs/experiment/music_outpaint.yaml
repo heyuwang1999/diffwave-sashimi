@@ -1,0 +1,39 @@
+# @package _global_
+# RECOMMENDED for "train on a few hours, then generate any length."
+# One SaShiMi-DiffWave model trained with overlap-outpainting: it both generates
+# unconditionally and continues from a clean in-sequence prefix. At inference it
+# rolls out seamlessly to ANY duration (generate.gen_seconds), seeded from noise
+# (pure generation) or from a clip (continuation).
+#
+# Train:    python train.py experiment=music_outpaint
+# Generate (pure, 30s):       python generate.py experiment=music_outpaint \
+#                               generate.ckpt_iter=max generate.gen_seconds=30
+# Continue a clip (30s more):  ... generate.context_path=data/music_holdout/<x>.wav generate.gen_seconds=30
+# Faster: add generate.sampler=ddim generate.sampling_steps=30
+defaults:
+  - /model: sashimi_outpaint
+  - /dataset: music
+
+diffusion:
+  T: 200
+  beta_0: 0.0001
+  beta_T: 0.02
+  beta: null
+  parameterization: v          # v-pred + Min-SNR: better fidelity/convergence (Tier-0)
+  min_snr_gamma: 5.0
+  schedule: linear
+  stft_loss_weight: 0.0
+  outpaint_uncond_prob: 0.3    # fraction of steps trained fully unconditionally (enables noise seeding)
+
+train:
+  name: outpaint
+  batch_size_per_gpu: 4        # 22-24GB L4/A10 at d_model=64, L~44k. A100: 8. OOM? 2.
+  n_iters: 500001
+  iters_per_ckpt: 5000
+  iters_per_logging: 100
+  learning_rate: 2e-4
+
+generate:
+  n_samples: 4
+  gen_seconds: 30              # default generation length; override on the CLI
+  outpaint_overlap: null       # null = segment_length // 2 (~1 s of clean carry-over)

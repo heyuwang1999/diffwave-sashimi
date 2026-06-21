@@ -206,6 +206,7 @@ class Sashimi(nn.Module):
             context_n_blocks=6,
             context_mode="global",      # "global" (add to step embed) or "cross_attn" (bottleneck)
             n_context_tokens=64,
+            outpaint=False,
             **kwargs,
         ):
         super().__init__()
@@ -221,7 +222,15 @@ class Sashimi(nn.Module):
         # Self-conditioning (Chen et al. 2022): the model also sees its own
         # previous x0 estimate, concatenated as an extra input channel.
         self.self_conditioning = self_conditioning
-        conv_in = in_channels * 2 if self_conditioning else in_channels
+        # Outpainting: the model also sees a binary mask channel marking the clean
+        # in-sequence context region (enables seamless arbitrary-length rollout).
+        self.outpaint = outpaint
+
+        conv_in = in_channels
+        if self_conditioning:
+            conv_in += in_channels
+        if outpaint:
+            conv_in += 1  # mask channel
 
         # initial conv1x1 with relu
         self.init_conv = nn.Sequential(Conv(conv_in, d_model, kernel_size=1), nn.ReLU())
@@ -304,15 +313,18 @@ class Sashimi(nn.Module):
                                         nn.ReLU(),
                                         ZeroConv1d(d_model, out_channels))
 
-    def forward(self, input_data, mel_spec=None, x_self_cond=None, context=None):
+    def forward(self, input_data, mel_spec=None, x_self_cond=None, context=None, mask=None):
         audio, diffusion_steps = input_data
 
-        x = audio
+        # Assemble input channels in a fixed order: audio [, self-cond x0 est] [, mask].
+        parts = [audio]
         if self.self_conditioning:
-            # concat previous x0 estimate (zeros if none) as extra input channel(s)
-            if x_self_cond is None:
-                x_self_cond = torch.zeros_like(audio)
-            x = torch.cat([x, x_self_cond], dim=1)
+            parts.append(x_self_cond if x_self_cond is not None else torch.zeros_like(audio))
+        if self.outpaint:
+            parts.append(mask if mask is not None
+                         else torch.zeros(audio.shape[0], 1, audio.shape[-1],
+                                          device=audio.device, dtype=audio.dtype))
+        x = torch.cat(parts, dim=1) if len(parts) > 1 else audio
         x = self.init_conv(x)
 
         # x = self.residual_layer((x, diffusion_steps))

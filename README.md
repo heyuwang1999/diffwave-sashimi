@@ -36,6 +36,29 @@ Everything we own is `vendor/dataloaders/music.py`, the three `configs/*/music*.
 files, one registration line in `vendor/dataloaders/__init__.py`, and the
 `scripts/` + `music_continuation/` packages. The upstream model code is untouched.
 
+## Recommended: train once → generate any length (outpainting)
+
+For "train on a few hours of clips, then generate audio of any length," use the
+**outpainting** model (`experiment=music_outpaint`). One model is trained to both
+generate unconditionally *and* continue from a clean in-sequence prefix; at
+inference it rolls out seamlessly to any duration by carrying each window's
+waveform tail as the next window's clean context (sample-continuous, no seams).
+It covers **both** pure generation and continuation.
+
+```bash
+cd vendor
+python train.py experiment=music_outpaint train.batch_size_per_gpu=4
+# pure generation, any length:
+python generate.py experiment=music_outpaint generate.ckpt_iter=max generate.gen_seconds=30
+# continue a clip:
+python generate.py experiment=music_outpaint generate.ckpt_iter=max generate.gen_seconds=30 \
+    generate.context_path=data/music_holdout/<clip>.wav
+# faster sampling: add  generate.sampler=ddim generate.sampling_steps=30
+```
+
+The single Colab notebook `notebooks/colab_quickstart.ipynb` runs this end to end.
+The milestones below document the other (earlier) approaches the repo also supports.
+
 ## Milestone 1 — unconditional generation (ready)
 
 Target spec (your choices): **22.05 kHz mono, ~2 s clips, single A100/L4**.

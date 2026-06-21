@@ -254,10 +254,13 @@ def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None, con
     min_snr_gamma = _dh.get("min_snr_gamma", None)
     stft_w = _dh.get("stft_loss_weight", 0.0)
     cfg_dropout = _dh.get("context_cfg_dropout", 0.0)
+    outpaint_uncond_prob = _dh.get("outpaint_uncond_prob", 0.3)
     self_cond = getattr(net, "self_conditioning", False) or \
         getattr(getattr(net, "module", None), "self_conditioning", False)
     ctx_cond = getattr(net, "context_conditioning", False) or \
         getattr(getattr(net, "module", None), "context_conditioning", False)
+    outp = getattr(net, "outpaint", False) or \
+        getattr(getattr(net, "module", None), "outpaint", False)
 
     B, C, L = audio.shape
     diffusion_steps = torch.randint(T, size=(B,1,1)).cuda()  # sample steps 1~T
@@ -266,6 +269,28 @@ def training_loss(net, loss_fn, audio, diffusion_hyperparams, mel_spec=None, con
     sqrt_abar, sqrt_1m_abar = torch.sqrt(abar), torch.sqrt(1 - abar)
     x_t = sqrt_abar * audio + sqrt_1m_abar * z              # x_t from q(x_t|x_0)
     steps = diffusion_steps.view(B, 1)
+
+    # ---- Outpainting branch: condition on a clean in-sequence prefix ----------
+    # Each example gets a random clean-prefix length K (a fraction are fully
+    # unconditional, K=0). The known region holds clean audio; the rest is noised.
+    # Loss is computed only on the noised (unknown) region.
+    if outp:
+        kmin, kmax = int(0.05 * L), int(0.5 * L)
+        Ks = torch.randint(kmin, kmax + 1, (B,), device=audio.device)
+        uncond = torch.rand(B, device=audio.device) < outpaint_uncond_prob
+        Ks = torch.where(uncond, torch.zeros_like(Ks), Ks)
+        idx = torch.arange(L, device=audio.device).view(1, 1, L)
+        mask = (idx < Ks.view(B, 1, 1)).float()             # 1 = known/clean prefix
+        x_in = mask * audio + (1 - mask) * x_t              # known clean, unknown noisy
+        prediction = net((x_in, steps), mask=mask)
+        target = z if parameterization == "eps" else (sqrt_abar * z - sqrt_1m_abar * audio)
+        se = (prediction - target) ** 2
+        if min_snr_gamma is not None:
+            snr = abar / (1 - abar)
+            clamped = torch.clamp(snr, max=min_snr_gamma)
+            se = se * (clamped / snr if parameterization == "eps" else clamped / (snr + 1))
+        region = 1 - mask                                   # only score the unknown region
+        return (se * region).sum() / region.sum().clamp(min=1.0)
 
     # Classifier-free guidance: drop the context (this whole step) with prob
     # cfg_dropout so the model also learns the unconditional score.

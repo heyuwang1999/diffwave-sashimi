@@ -43,9 +43,16 @@ Each is a config flag, defaults == original DiffWave, so the baseline is unchang
 2. ✅ **Cross-attention conditioning**: the UNet bottleneck attends to a sequence
    of context tokens (richer than the global vector). `model.context_mode=cross_attn`
    or `experiment=music_continuation_xattn`. A/B vs the global baseline.
-3. ✅ **Long continuation via sliding-window rollout**: chain the context-conditioned
-   sampler — generate a chunk, feed it back as context, repeat
-   (`generate.rollout_chunks=N`). Gives arbitrarily-long output now, low risk.
+3. ✅ **Overlap outpainting (RECOMMENDED for arbitrary length)**: a single model
+   (`experiment=music_outpaint`) trained with an in-sequence clean-prefix mask
+   channel — it generates unconditionally *and* continues from a clean prefix. The
+   rollout carries each window's exact waveform tail as the next window's clean
+   context and appends only new samples → **sample-continuous, seamless** output of
+   any length (`generate.gen_seconds=N`), seeded from noise (pure gen) or a clip
+   (continuation). This is the chosen path for the "train once → any length" goal.
+   ✅ **Sliding-window rollout** (earlier approach, `generate.rollout_chunks=N`):
+   chains the context-encoder sampler; simpler but concatenates independently
+   sampled chunks (audible seams) — superseded by outpainting for long output.
    ⬜ **Diffusion Forcing / AR-diffusion** (Chen 2024) — per-frame noise levels for
    *better* long-range stability — deferred: it's a core-contract architecture
    change (per-frame noise, in-sequence conditioning, custom rollout) best done

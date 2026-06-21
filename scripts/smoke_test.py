@@ -295,6 +295,42 @@ sdv = sampling(cc_net, (1, 1, TINY_L), dh_v100, context=torch.randn(1, 1, TINY_L
                guidance=2.0, sampler="ddim", sampling_steps=8)
 check("DDIM + v-param + CFG finite", tuple(sdv.shape) == (1, 1, TINY_L) and bool(torch.isfinite(sdv).all()))
 
+print("\n=== 13. Outpainting: arbitrary-length seamless generation ===")
+from generate import outpaint_rollout
+op_cfg = OmegaConf.create(dict(model_cfg))
+op_cfg["_name_"] = "sashimi"; op_cfg["outpaint"] = True
+op_net = construct_model(op_cfg)
+check("outpaint model built (flag + mask input channel)",
+      getattr(op_net, "outpaint", False) and op_net.init_conv[0].conv.in_channels == 2,
+      f"in_channels={op_net.init_conv[0].conv.in_channels}")
+with torch.no_grad():  # nudge zero-init final conv so grads/output reflect wiring
+    for p in op_net.final_conv.parameters():
+        p.add_(0.1 * torch.randn_like(p))
+# masked outpaint training loss -> finite, grads reach the mask-channel init_conv
+dh_op = calc_diffusion_hyperparams(T=50, beta_0=1e-4, beta_T=0.02, beta=None, fast=False,
+                                   parameterization="v", min_snr_gamma=5.0, outpaint_uncond_prob=0.3)
+op_net.train(); op_net.zero_grad()
+lo = training_loss(op_net, nn.MSELoss(), x, dh_op)
+lo.backward()
+ic_grad = any(p.grad is not None and float(p.grad.abs().sum()) > 0 for p in op_net.init_conv.parameters())
+check("outpaint masked loss: finite + grads to mask-channel init_conv",
+      bool(torch.isfinite(lo)) and ic_grad, f"loss={lo.item():.4f}")
+# arbitrary-length rollout (DDPM), unconditional seed
+op_net.eval()
+dh_s = calc_diffusion_hyperparams(T=12, beta_0=1e-4, beta_T=0.02, beta=None, fast=False, parameterization="v")
+roll = outpaint_rollout(op_net, dh_s, total_len=3 * TINY_L, window_len=TINY_L, overlap=TINY_L // 2)
+check("outpaint rollout: exact length + finite (uncond seed)",
+      tuple(roll.shape) == (1, 1, 3 * TINY_L) and bool(torch.isfinite(roll).all()), str(tuple(roll.shape)))
+# seeded from a clip + DDIM, odd length (exercises trim)
+roll2 = outpaint_rollout(op_net, dh_s, total_len=int(2.5 * TINY_L), window_len=TINY_L, overlap=TINY_L // 2,
+                         sampler="ddim", sampling_steps=6, seed_known=torch.randn(1, 1, TINY_L // 2))
+check("outpaint rollout: exact length + finite (clip seed, DDIM)",
+      tuple(roll2.shape) == (1, 1, int(2.5 * TINY_L)) and bool(torch.isfinite(roll2).all()), str(tuple(roll2.shape)))
+# the auto-sample-during-training path (sampling() with mask=None) must still work
+ss = sampling(op_net, (1, 1, TINY_L), dh_s)
+check("outpaint model works via plain sampling() (mask defaults to zeros)",
+      tuple(ss.shape) == (1, 1, TINY_L) and bool(torch.isfinite(ss).all()))
+
 print("\n" + "=" * 50)
 n_pass = sum(results); n_tot = len(results)
 print(f"{n_pass}/{n_tot} checks passed")

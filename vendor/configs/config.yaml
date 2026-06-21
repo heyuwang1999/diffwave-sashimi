@@ -21,7 +21,8 @@ generate:
   context_path: null # Continuation: path to a context audio clip to condition on (requires model.context_conditioning)
   guidance: 1.0 # Classifier-free guidance scale for continuation (1.0 = none; try 2-5)
   rollout_chunks: 1 # >1 = sliding-window long continuation (chains the sampler; output = rollout_chunks * segment_length)
-  gen_seconds: null # Continuation: target output duration in seconds (auto-sets rollout_chunks + trims to exact length)
+  gen_seconds: null # Continuation/outpaint: target output duration in seconds
+  outpaint_overlap: null # Outpaint rollout: clean-overlap samples between windows (null = segment_length//2)
   sampler: ddpm # "ddpm" (ancestral, all T steps) or "ddim" (deterministic, fewer steps)
   sampling_steps: null # DDIM: number of reverse steps (e.g. 20-50); null = all T
 

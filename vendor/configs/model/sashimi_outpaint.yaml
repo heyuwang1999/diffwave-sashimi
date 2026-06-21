@@ -1,0 +1,19 @@
+_name_: sashimi
+unconditional: true          # trained on plain audio clips; conditioning is the in-sequence mask
+in_channels: 1
+out_channels: 1
+diffusion_step_embed_dim_in: 128
+diffusion_step_embed_dim_mid: 512
+diffusion_step_embed_dim_out: 512
+unet: true
+self_conditioning: false
+context_conditioning: false
+# Outpainting: add a mask channel marking a clean in-sequence prefix, so the model
+# learns to continue from it. Enables seamless arbitrary-length rollout at inference.
+outpaint: true
+d_model: 64
+n_layers: 6
+pool: [4, 4]
+expand: 2
+ff: 2
+L: ${dataset.segment_length}

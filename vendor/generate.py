@@ -140,6 +140,81 @@ def rollout_continuation(net, diffusion_hyperparams, context, n_chunks, chunk_le
 
 
 @torch.no_grad()
+def outpaint_rollout(net, diffusion_hyperparams, total_len, window_len, overlap,
+                     sampler="ddpm", sampling_steps=None, seed_known=None):
+    """Seamless arbitrary-length generation by overlap outpainting.
+
+    Each window denoises an L-sample clip whose first `overlap` samples are a CLEAN
+    context (the previous window's tail), so successive windows are sample-continuous.
+    We append only the newly generated samples (after the overlap). The first window
+    is unconditional (or seeded from `seed_known`, shape (1,1,overlap)).
+
+    Returns (1, 1, total_len).
+    """
+    _dh = diffusion_hyperparams
+    T, Alpha, Alpha_bar, Sigma = _dh["T"], _dh["Alpha"], _dh["Alpha_bar"], _dh["Sigma"]
+    parameterization = _dh.get("parameterization", "eps")
+    assert 0 < overlap < window_len, "overlap must be in (0, window_len)"
+
+    if sampler == "ddim":
+        n = sampling_steps or T
+        seq = torch.linspace(T - 1, 0, n).round().long().tolist()
+        iterator = []
+        for t in seq:
+            if not iterator or iterator[-1] != int(t):
+                iterator.append(int(t))
+    else:
+        iterator = list(range(T - 1, -1, -1))
+
+    def zeros():
+        return torch.zeros(1, 1, window_len).cuda()
+
+    def reverse(known_full, mask):
+        x = torch.normal(0, 1, size=(1, 1, window_len)).cuda()
+        for i, t in enumerate(iterator):
+            steps = (t * torch.ones((1, 1))).cuda()
+            sqrt_abar_t, sqrt_1m_t = torch.sqrt(Alpha_bar[t]), torch.sqrt(1 - Alpha_bar[t])
+            x_in = mask * known_full + (1 - mask) * x          # clean known + noisy unknown
+            mo = net((x_in, steps), mask=mask)
+            eps = sqrt_1m_t * x + sqrt_abar_t * mo if parameterization == "v" else mo
+            x0 = (x - sqrt_1m_t * eps) / sqrt_abar_t
+            if sampler == "ddim":
+                t_prev = iterator[i + 1] if i + 1 < len(iterator) else -1
+                x = x0 if t_prev < 0 else (torch.sqrt(Alpha_bar[t_prev]) * x0
+                                           + torch.sqrt(1 - Alpha_bar[t_prev]) * eps)
+            else:
+                x = (x - (1 - Alpha[t]) / sqrt_1m_t * eps) / torch.sqrt(Alpha[t])
+                if t > 0:
+                    x = x + Sigma[t] * torch.normal(0, 1, size=(1, 1, window_len)).cuda()
+        return mask * known_full + (1 - mask) * x              # keep known region exact
+
+    def prefix_mask(k):
+        m = zeros(); m[..., :k] = 1.0; return m
+
+    # First window: unconditional, or seeded from a provided clip tail.
+    if seed_known is None:
+        win = reverse(zeros(), zeros())
+        out_parts = [win]
+    else:
+        k = seed_known.shape[-1]
+        kf = zeros(); kf[..., :k] = seed_known
+        win = reverse(kf, prefix_mask(k))
+        out_parts = [win[..., k:]]              # exclude the provided seed from the output
+    running = win
+    produced = sum(p.shape[-1] for p in out_parts)
+
+    while produced < total_len:
+        kf = zeros(); kf[..., :overlap] = running[..., -overlap:]   # carry the exact tail
+        win = reverse(kf, prefix_mask(overlap))
+        new = win[..., overlap:]
+        out_parts.append(new)
+        running = win
+        produced += new.shape[-1]
+
+    return torch.cat(out_parts, dim=-1)[..., :total_len]
+
+
+@torch.no_grad()
 def generate(
         rank,
         diffusion_cfg,
@@ -152,6 +227,7 @@ def generate(
         ckpt_smooth=None,
         mel_path=None, mel_name=None,
         context_path=None, guidance=1.0, rollout_chunks=1, gen_seconds=None,
+        outpaint_overlap=None,
         sampler="ddpm", sampling_steps=None,
         dataloader=None,
     ):
@@ -257,9 +333,9 @@ def generate(
             rollout_chunks = max(1, math.ceil(gen_seconds * dataset_cfg["sampling_rate"] / audio_length))
         print(f'continuation: conditioning on last {ctx_len} samples of '
               f'{context_path} | guidance={guidance} | rollout_chunks={rollout_chunks}')
-    elif gen_seconds is not None:
-        print('NOTE: gen_seconds only applies to continuation (needs model.context_conditioning '
-              '+ generate.context_path); unconditional samples are fixed at segment_length.')
+    elif gen_seconds is not None and not model_cfg.get("outpaint", False):
+        print('NOTE: gen_seconds applies to continuation/outpaint models; plain '
+              'unconditional samples are fixed at segment_length.')
     print(f'begin generating audio of length {audio_length} | {n_samples} samples with batch size {batch_size}')
 
     # inference
@@ -269,7 +345,21 @@ def generate(
 
     generated_audio = []
 
-    if context_batch is not None and rollout_chunks > 1:
+    if model_cfg.get("outpaint", False) and gen_seconds is not None:
+        # Seamless arbitrary-length generation via overlap outpainting.
+        total_len = int(gen_seconds * dataset_cfg["sampling_rate"])
+        overlap = int(outpaint_overlap) if outpaint_overlap else audio_length // 2
+        seed_known = None
+        if context_path is not None:  # continue a real clip instead of seeding from noise
+            seed_known = load_context(context_path, overlap, dataset_cfg["sampling_rate"]).cuda()
+        for _ in range(n_samples):
+            roll = outpaint_rollout(net, diffusion_hyperparams, total_len, audio_length, overlap,
+                                    sampler=sampler, sampling_steps=sampling_steps, seed_known=seed_known)
+            generated_audio.append(roll)
+        generated_audio = torch.cat(generated_audio, dim=0)
+        print(f'outpaint: {total_len} samples (~{gen_seconds}s) each, window={audio_length} '
+              f'overlap={overlap}, seed={"clip" if seed_known is not None else "uncond"}')
+    elif context_batch is not None and rollout_chunks > 1:
         # Long continuation by sliding-window rollout (one sample at a time).
         ctx_len = context_batch.shape[-1]
         for _ in range(n_samples):
