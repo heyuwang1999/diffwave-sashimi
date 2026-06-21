@@ -270,8 +270,12 @@ def generate(
             checkpoint = torch.load(model_path, map_location='cpu')
             net.load_state_dict(checkpoint['model_state_dict'])
             print('Successfully loaded model at iteration {}'.format(ckpt_iter))
-        except:
-            raise Exception('No valid model found')
+        except Exception as e:
+            raise Exception(
+                f"Could not load checkpoint for this experiment "
+                f"(looked in {ckpt_path}, ckpt_iter={ckpt_iter}): {e}\n"
+                f"Make sure you TRAINED this same experiment (run names/in-channels must match)."
+            )
     else:
         state_dict = smooth_ckpt(ckpt_path, ckpt_smooth, ckpt_iter, alpha=None)
         net.load_state_dict(state_dict)
@@ -429,6 +433,7 @@ def main(cfg: DictConfig) -> None:
         diffusion_cfg=cfg.diffusion,
         model_cfg=cfg.model,
         dataset_cfg=cfg.dataset,
+        name=cfg.train.get("name", None),  # match the run-name prefix used at train time
         **cfg.generate,
     )
 
