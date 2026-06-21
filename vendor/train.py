@@ -176,22 +176,27 @@ def train(
                 #     assert mel_path is not None
                 #     mel_name=generate_cfg.mel_name # "LJ001-0001"
                 if not model_cfg["unconditional"]: assert generate_cfg.mel_name is not None
-                generate_cfg["ckpt_iter"] = n_iter
-                samples = generate(
-                    rank, # n_iter,
-                    diffusion_cfg, model_cfg, dataset_cfg,
-                    name=name,
-                    **generate_cfg,
-                    # n_samples, n_iter, name,
-                    # mel_path=mel_path,
-                    # mel_name=mel_name,
-                )
-                samples = [wandb.Audio(sample.squeeze().cpu(), sample_rate=dataset_cfg['sampling_rate']) for sample in samples]
-                wandb.log(
-                    {'inference/audio': samples},
-                    step=n_iter,
-                    # commit=False,
-                )
+                # Lightweight monitoring sample: a single short window (NO long
+                # rollout), fast DDIM, few samples — and guarded so a sampling
+                # hiccup (e.g. OOM) never stops training. Use step 6 / generate.py
+                # for full-length / rollout generation.
+                try:
+                    sample_cfg = dict(generate_cfg)
+                    sample_cfg.update(
+                        ckpt_iter=n_iter,
+                        gen_seconds=None,                 # no rollout while training
+                        rollout_chunks=1,
+                        n_samples=min(int(sample_cfg.get("n_samples") or 2), 2),
+                        sampler="ddim",
+                        sampling_steps=min(50, int(diffusion_cfg["T"])),
+                    )
+                    samples = generate(rank, diffusion_cfg, model_cfg, dataset_cfg, name=name, **sample_cfg)
+                    samples = [wandb.Audio(s.squeeze().cpu(), sample_rate=dataset_cfg['sampling_rate']) for s in samples]
+                    wandb.log({'inference/audio': samples}, step=n_iter)
+                except Exception as e:
+                    print(f"[warn] checkpoint sampling skipped ({e}); training continues")
+                finally:
+                    torch.cuda.empty_cache()
 
             n_iter += 1
         if rank == 0:

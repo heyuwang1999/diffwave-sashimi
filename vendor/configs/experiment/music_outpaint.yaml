@@ -34,6 +34,8 @@ train:
   learning_rate: 2e-4
 
 generate:
-  n_samples: 4
-  gen_seconds: 30              # default generation length; override on the CLI
+  n_samples: 2                 # rollout is sequential; keep small (generation time ~ n_samples x seconds x steps)
+  sampler: ddim                # deterministic, far fewer steps than DDPM-200 -> much faster rollout
+  sampling_steps: 50
+  gen_seconds: null            # set on the CLI for real generation; null here so training auto-samples stay short
   outpaint_overlap: null       # null = segment_length // 2 (~1 s of clean carry-over)

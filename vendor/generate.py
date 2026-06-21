@@ -169,7 +169,7 @@ def outpaint_rollout(net, diffusion_hyperparams, total_len, window_len, overlap,
     def zeros():
         return torch.zeros(1, 1, window_len).cuda()
 
-    def reverse(known_full, mask):
+    def reverse(known_full, mask, pbar=None):
         x = torch.normal(0, 1, size=(1, 1, window_len)).cuda()
         for i, t in enumerate(iterator):
             steps = (t * torch.ones((1, 1))).cuda()
@@ -186,31 +186,41 @@ def outpaint_rollout(net, diffusion_hyperparams, total_len, window_len, overlap,
                 x = (x - (1 - Alpha[t]) / sqrt_1m_t * eps) / torch.sqrt(Alpha[t])
                 if t > 0:
                     x = x + Sigma[t] * torch.normal(0, 1, size=(1, 1, window_len)).cuda()
+            if pbar is not None:
+                pbar.update(1)
         return mask * known_full + (1 - mask) * x              # keep known region exact
 
     def prefix_mask(k):
         m = zeros(); m[..., :k] = 1.0; return m
 
+    # Progress bar over all reverse steps across all windows (so it never looks hung).
+    import math
+    step = window_len - overlap
+    len0 = window_len if seed_known is None else (window_len - seed_known.shape[-1])
+    n_windows = 1 + max(0, math.ceil(max(0, total_len - len0) / step))
+    pbar = tqdm(total=n_windows * len(iterator), desc=f'outpaint {total_len} smp ({sampler})')
+
     # First window: unconditional, or seeded from a provided clip tail.
     if seed_known is None:
-        win = reverse(zeros(), zeros())
+        win = reverse(zeros(), zeros(), pbar)
         out_parts = [win]
     else:
         k = seed_known.shape[-1]
         kf = zeros(); kf[..., :k] = seed_known
-        win = reverse(kf, prefix_mask(k))
+        win = reverse(kf, prefix_mask(k), pbar)
         out_parts = [win[..., k:]]              # exclude the provided seed from the output
     running = win
     produced = sum(p.shape[-1] for p in out_parts)
 
     while produced < total_len:
         kf = zeros(); kf[..., :overlap] = running[..., -overlap:]   # carry the exact tail
-        win = reverse(kf, prefix_mask(overlap))
+        win = reverse(kf, prefix_mask(overlap), pbar)
         new = win[..., overlap:]
         out_parts.append(new)
         running = win
         produced += new.shape[-1]
 
+    pbar.close()
     return torch.cat(out_parts, dim=-1)[..., :total_len]
 
 
